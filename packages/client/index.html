@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>tnmtmmorpg</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0d0d0d;
+        overflow: hidden;
+      }
+
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+
+      /* The Pixi canvas fills the window; Pixi itself manages its backing store. */
+      #game-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Overlay sits above the canvas; the shell never eats pointer events. */
+      #ui-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .debug-panel {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        min-width: 150px;
+        padding: 6px 10px;
+        pointer-events: auto;
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #d8d8d8;
+        background: rgba(10, 10, 12, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        user-select: none;
+      }
+
+      .debug-panel .debug-toggle {
+        float: right;
+        border: none;
+        background: none;
+        color: #d8d8d8;
+        font: inherit;
+        cursor: pointer;
+        padding: 0 4px;
+      }
+
+      .debug-rows {
+        margin-top: 2px;
+      }
+
+      .conn-on {
+        color: #7ee787;
+      }
+
+      .conn-off {
+        color: #ff7b72;
+      }
+
+      /* Feature-provided panels (see features/_example/client.tsx). */
+      .feature-panels {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+      }
+
+      .feature-panel {
+        padding: 6px 10px;
+        pointer-events: auto;
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #d8d8d8;
+        background: rgba(10, 10, 12, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        user-select: none;
+      }
+
+      .feature-banner {
+        position: absolute;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 60%;
+        padding: 6px 12px;
+        pointer-events: auto;
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #ffd7d5;
+        background: rgba(90, 20, 20, 0.85);
+        border: 1px solid #ff7b72;
+        border-radius: 6px;
+        user-select: none;
+      }
+
+      /* Phase 5: inventory panel (bottom-right, above the canvas). */
+      .inv-toggle-btn {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        width: 40px;
+        height: 40px;
+        pointer-events: auto;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        background: rgba(10, 10, 12, 0.72);
+        font-size: 18px;
+        cursor: pointer;
+      }
+
+      .inventory-panel {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        width: 332px;
+        padding: 8px 10px;
+        pointer-events: auto;
+        font:
+          12px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #d8d8d8;
+        background: rgba(10, 10, 12, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        user-select: none;
+      }
+
+      .inv-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .inv-capacity {
+        flex: 1;
+        color: #8a8a8a;
+      }
+
+      .inv-close {
+        border: none;
+        background: none;
+        color: #d8d8d8;
+        font: inherit;
+        cursor: pointer;
+        padding: 0 4px;
+      }
+
+      .inv-slot-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 4px;
+      }
+
+      .inv-slot {
+        position: relative;
+        min-height: 48px;
+        padding: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.04);
+        text-align: center;
+        cursor: grab;
+      }
+
+      .inv-slot-empty {
+        border-style: dashed;
+        border-color: rgba(255, 255, 255, 0.08);
+        cursor: default;
+      }
+
+      .inv-slot-dragging {
+        opacity: 0.4;
+      }
+
+      .inv-emoji {
+        display: block;
+        font-size: 16px;
+        line-height: 1.2;
+      }
+
+      .inv-name {
+        display: block;
+        font-size: 10px;
+        color: #c8c8c8;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .inv-count {
+        display: block;
+        font-size: 10px;
+        color: #7ee787;
+      }
+
+      .inv-drop-btn {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        border: none;
+        border-radius: 3px;
+        background: rgba(180, 60, 60, 0.75);
+        color: #fff;
+        font-size: 9px;
+        padding: 1px 4px;
+        cursor: pointer;
+      }
+
+      .inv-empty {
+        color: #8a8a8a;
+        padding: 8px 0;
+      }
+
+      .inv-hint {
+        margin-top: 6px;
+        color: #8a8a8a;
+        font-size: 10px;
+      }
+
+      /* Phase 6: recipe browser (bottom-left, above the canvas). */
+      .craft-toggle-btn {
+        position: absolute;
+        left: 8px;
+        bottom: 8px;
+        width: 40px;
+        height: 40px;
+        pointer-events: auto;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        background: rgba(10, 10, 12, 0.72);
+        font-size: 18px;
+        cursor: pointer;
+      }
+
+      .recipe-panel {
+        position: absolute;
+        left: 8px;
+        bottom: 8px;
+        width: 330px;
+        max-height: 60vh;
+        overflow-y: auto;
+        padding: 8px 10px;
+        pointer-events: auto;
+        font:
+          12px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        color: #d8d8d8;
+        background: rgba(10, 10, 12, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        user-select: none;
+      }
+
+      .recipe-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .recipe-station {
+        flex: 1;
+        color: #8a8a8a;
+      }
+
+      .recipe-close {
+        border: none;
+        background: none;
+        color: #d8d8d8;
+        font: inherit;
+        cursor: pointer;
+        padding: 0 4px;
+      }
+
+      .recipe-hint {
+        color: #8a8a8a;
+        padding: 4px 0;
+      }
+
+      .recipe-row {
+        padding: 6px 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .recipe-row:first-child {
+        border-top: none;
+      }
+
+      .recipe-name {
+        color: #fff;
+      }
+
+      .recipe-line {
+        color: #a8a8a8;
+      }
+
+      .recipe-craft-btn {
+        margin-top: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #d8d8d8;
+        font: inherit;
+        cursor: pointer;
+        padding: 2px 8px;
+      }
+
+      .recipe-craft-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+
+      .recipe-jobs {
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        margin-top: 6px;
+        padding-top: 4px;
+      }
+
+      .recipe-jobs-title {
+        color: #8a8a8a;
+        margin-bottom: 2px;
+      }
+
+      .craft-job {
+        margin: 5px 0;
+      }
+
+      .craft-job-name {
+        font-size: 11px;
+        color: #c8c8c8;
+      }
+
+      .craft-track {
+        height: 6px;
+        margin-top: 2px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .craft-fill {
+        height: 100%;
+        background: #7ee787;
+        border-radius: 3px;
+      }
+
+      .craft-cancel-btn {
+        margin-top: 2px;
+        border: none;
+        border-radius: 3px;
+        background: rgba(180, 60, 60, 0.75);
+        color: #fff;
+        font-size: 10px;
+        padding: 1px 6px;
+        cursor: pointer;
+      }
+
+      /* Buttons inside feature panels (see features/_example/client.tsx). */
+      .feature-buttons {
+        display: flex;
+        gap: 4px;
+        margin-top: 6px;
+      }
+
+      .feature-buttons button {
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #d8d8d8;
+        font: inherit;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+      <div id="ui-overlay"></div>
+    </div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

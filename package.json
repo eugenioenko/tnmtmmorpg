@@ -1,0 +1,26 @@
+{
+  "name": "tnmtmmorpg",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "world:reset": "node tools/reset-world.mjs",
+    "create-feature": "node tools/create-feature.mjs",
+    "bot": "node tools/bot.mjs"
+  },
+  "devDependencies": {
+    "@game/shared": "workspace:*",
+    "@types/node": "^22",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "eslint": "^9.0",
+    "prettier": "^3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.8",
+    "typescript-eslint": "^8",
+    "ws": "^8.21.1"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@game/server",
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@game/shared": "workspace:*",
+    "ws": "^8.21.1"
+  },
+  "scripts": {
+    "dev": "node --watch --watch-path=../../features src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node src/test-phase5.ts && node src/test-phase6.ts"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}
