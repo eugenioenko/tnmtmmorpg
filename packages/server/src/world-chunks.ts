@@ -126,7 +126,7 @@ function hasNonGrass(data: Uint8Array): boolean {
  * Deterministic per-chunk generation from the world seed. Every tile is
  * classified from layered noise: elevation (fbm) decides ocean/beach/land/
  * peaks, latitude plus a temperature noise band decides snow, moisture
- * decides swamp/forest/scrubland. The world border is ocean. The same seed
+ * decides swamp/forest/scrubland. The world wraps like a torus — no borders. The same seed
  * always produces the same world; unvisited chunks are generated identically
  * on demand, so the 10000x10000 world costs memory only where players go.
  */
@@ -144,13 +144,7 @@ export function generateChunk(
       const wx = cx * CHUNK_SIZE + lx;
       const wy = cy * CHUNK_SIZE + ly;
 
-      // World border is water (ocean)
-      if (wx === 0 || wy === 0 || wx === worldWidth - 1 || wy === worldHeight - 1) {
-        data[ly * CHUNK_SIZE + lx] = TILE_WATER;
-        continue;
-      }
-
-      // Larger features: lower frequency multipliers produce continent-scale
+// Larger features: lower frequency multipliers produce continent-scale
       // terrain instead of scattered noise ponds.  Elevation drives oceans,
       // landmass and mountains; moisture separates forest/swamp from scrubland.
       const elevation = fbm(seed, wx * 0.006, wy * 0.006, 4);

@@ -35,8 +35,8 @@ export function handleMoveIntent(world: World, entityId: number, intent: MoveInt
 
   const delta = DELTA[dir];
   const target = { x: entity.x + delta.x, y: entity.y + delta.y };
-  if (!world.isWalkable(target.x, target.y)) return; // wall: authoritative rejection, silently
+  if (!world.isWalkable(target.x, target.y)) return; // blocked: authoritative rejection, silently
 
-  // Move in place; the world keeps the spatial index and dirty set in sync.
+  // Move in place; coords wrap around the torus world automatically.
   world.moveEntity(entityId, target.x, target.y);
 }

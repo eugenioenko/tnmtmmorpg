@@ -56,14 +56,12 @@ export function forgetSession(sessionId: string): void {
 }
 
 /** The clamped tile viewport around a player (world edges included). */
-function viewportOf(entity: Entity, world: World): Viewport {
-  const x0 = entity.x - VIEW_RADIUS_X;
-  const y0 = entity.y - VIEW_RADIUS_Y;
+function viewportOf(entity: Entity): Viewport {
   return {
-    minX: x0 < 0 ? 0 : x0,
-    minY: y0 < 0 ? 0 : y0,
-    maxX: entity.x + VIEW_RADIUS_X >= world.width ? world.width - 1 : entity.x + VIEW_RADIUS_X,
-    maxY: entity.y + VIEW_RADIUS_Y >= world.height ? world.height - 1 : entity.y + VIEW_RADIUS_Y,
+    minX: entity.x - VIEW_RADIUS_X,
+    minY: entity.y - VIEW_RADIUS_Y,
+    maxX: entity.x + VIEW_RADIUS_X,
+    maxY: entity.y + VIEW_RADIUS_Y,
   };
 }
 
@@ -77,8 +75,11 @@ function scanTiles(world: World, vp: Viewport): { tiles: TileState[]; byKey: Map
   const byKey = new Map<string, string>();
   for (let y = vp.minY; y <= vp.maxY; y++) {
     for (let x = vp.minX; x <= vp.maxX; x++) {
+      // World wraps like a torus — world.tile() already wraps coordinates.
       const kind = world.tile(x, y);
       if (kind === 'grass') continue;
+      // Use the local (viewport-space) coordinates so the client places
+      // tiles where they appear, even when they come from the opposite edge.
       tiles.push({ x, y, kind });
       byKey.set(`${x},${y}`, kind);
     }
@@ -88,6 +89,10 @@ function scanTiles(world: World, vp: Viewport): { tiles: TileState[]; byKey: Map
 
 /** Every entity inside the player's exact tile viewport. */
 function entitiesInViewport(world: World, entity: Entity, vp: Viewport): EntityState[] {
+  // Scan the chunk range covering the viewport; entity coordinates are
+  // already wrapped (moveEntity normalises them), so the spatial-index
+  // ring around the player's chunk catches everything nearby, including
+  // entities that just wrapped across an edge.
   const chunk = worldToChunk(entity.x, entity.y);
   return world
     .entitiesInView(chunk.cx, chunk.cy, VIEW_RADIUS_X, VIEW_RADIUS_Y)
@@ -114,7 +119,7 @@ export function buildSnapshot(
   disabledFeatures: string[],
   sessionId: string,
 ): FullSnapshot | DeltaSnapshot {
-  const vp = viewportOf(entity, world);
+  const vp = viewportOf(entity);
   const entities = entitiesInViewport(world, entity, vp);
   const entityIds = new Set(entities.map((e) => e.id));
   const { tiles: tileList, byKey: tileMap } = scanTiles(world, vp);

@@ -127,12 +127,16 @@ export class World {
    * Move an entity to a tile, keeping the spatial index and the dirty set in
    * sync. Callers validate walkability themselves.
    */
+  /**
+   * Move an entity, wrapping its position around the world edges (torus).
+   * Callers validate walkability before calling this.
+   */
   moveEntity(id: number, x: number, y: number): void {
     const entity = this.entities.get(id);
     if (!entity) return;
-    entity.x = x;
-    entity.y = y;
-    this.updateEntityChunk(id, x, y);
+    entity.x = ((x % this.width) + this.width) % this.width;
+    entity.y = ((y % this.height) + this.height) % this.height;
+    this.updateEntityChunk(id, entity.x, entity.y);
     this.dirty.add(id);
   }
 
