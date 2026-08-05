@@ -28,14 +28,7 @@ export {
 
 /** The 8 terrain kinds the noise generator can produce. */
 export type TileKind =
-  | 'grass'
-  | 'water'
-  | 'mountain'
-  | 'sand'
-  | 'forest'
-  | 'dirt'
-  | 'snow'
-  | 'swamp';
+  'grass' | 'water' | 'mountain' | 'sand' | 'forest' | 'dirt' | 'snow' | 'swamp';
 
 /** Chunk edge in tiles; each chunk stores CHUNK_SIZE x CHUNK_SIZE tiles. */
 export const CHUNK_SIZE = 64;
@@ -123,12 +116,242 @@ function hasNonGrass(data: Uint8Array): boolean {
 }
 
 /**
+ * Deterministic per-chunk LCG from (seed, cx, cy) — the path generator's
+ * random source. Worlds stay reproducible from the seed: no Math.random
+ * anywhere, every bit of randomness flows through integer hashing.
+ */
+function chunkRng(seed: number, cx: number, cy: number): () => number {
+  let state = (seed ^ (cx * 374761393 + cy * 668265263)) >>> 0 || 1;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+/**
+ * Smoothing pass: a land tile whose neighbors are mostly a different kind
+ * switches to match them, wiping single-tile noise so biomes read as clean
+ * regions. A strict majority (half + 1 of the available in-chunk neighbors)
+ * must agree, so coastlines, snow lines and chunk borders stay intact.
+ * Water tiles are never smoothed into land — lakes only shrink through the
+ * small-patch fill below, never through a 5v5 bay squabble.
+ */
+function smoothChunk(data: Uint8Array): void {
+  const smoothed = new Uint8Array(data);
+  const counts = new Uint8Array(8); // one slot per tile byte (0..7)
+  for (let ly = 0; ly < CHUNK_SIZE; ly++) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      counts.fill(0);
+      let available = 0;
+      let majority = 0;
+      let majorityCount = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = lx + dx;
+          const ny = ly + dy;
+          if (nx < 0 || nx >= CHUNK_SIZE || ny < 0 || ny >= CHUNK_SIZE) continue;
+          const kind = data[ny * CHUNK_SIZE + nx];
+          counts[kind]++;
+          available++;
+          if (counts[kind] > majorityCount) {
+            majorityCount = counts[kind];
+            majority = kind;
+          }
+        }
+      }
+      const idx = ly * CHUNK_SIZE + lx;
+      if (data[idx] === TILE_WATER) continue; // never smooth water into land
+      const required = (available / 2 + 1) | 0;
+      if (majority !== data[idx] && majorityCount >= required) {
+        smoothed[idx] = majority;
+      }
+    }
+  }
+  data.set(smoothed);
+}
+
+/**
+ * Small-water fill: leftover ponds — interior water regions smaller than 30
+ * tiles — are filled to grass, so water appears as large connected oceans
+ * and long lakes, not scattered puddles. Regions touching the chunk border
+ * are left alone: they may continue into the neighboring chunk.
+ */
+function fillSmallWater(data: Uint8Array): void {
+  const visited = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
+  const queue = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
+  for (let ly = 0; ly < CHUNK_SIZE; ly++) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      const start = ly * CHUNK_SIZE + lx;
+      if (data[start] !== TILE_WATER || visited[start] !== 0) continue;
+      // Breadth-first flood fill of this 4-connected water region.
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = start;
+      visited[start] = 1;
+      let touchesBorder = false;
+      while (head < tail) {
+        const idx = queue[head++];
+        const qx = idx & (CHUNK_SIZE - 1);
+        const qy = idx >> CHUNK_SHIFT;
+        if (qx === 0 || qy === 0 || qx === CHUNK_SIZE - 1 || qy === CHUNK_SIZE - 1) {
+          touchesBorder = true;
+        }
+        if (qx > 0) {
+          const n = idx - 1;
+          if (data[n] === TILE_WATER && visited[n] === 0) {
+            visited[n] = 1;
+            queue[tail++] = n;
+          }
+        }
+        if (qx < CHUNK_SIZE - 1) {
+          const n = idx + 1;
+          if (data[n] === TILE_WATER && visited[n] === 0) {
+            visited[n] = 1;
+            queue[tail++] = n;
+          }
+        }
+        if (qy > 0) {
+          const n = idx - CHUNK_SIZE;
+          if (data[n] === TILE_WATER && visited[n] === 0) {
+            visited[n] = 1;
+            queue[tail++] = n;
+          }
+        }
+        if (qy < CHUNK_SIZE - 1) {
+          const n = idx + CHUNK_SIZE;
+          if (data[n] === TILE_WATER && visited[n] === 0) {
+            visited[n] = 1;
+            queue[tail++] = n;
+          }
+        }
+      }
+      if (tail < 30 && !touchesBorder) {
+        for (let i = 0; i < tail; i++) data[queue[i]] = TILE_GRASS;
+      }
+    }
+  }
+}
+
+/** Clamp a road control point back into the chunk (roads stay in-chunk). */
+function clampChunk(v: number): number {
+  return v < 0 ? 0 : v > CHUNK_SIZE - 1 ? CHUNK_SIZE - 1 : v;
+}
+
+/** Pave one tile as dirt road — walkable land only, never water or mountains. */
+function paveTile(data: Uint8Array, x: number, y: number): void {
+  const kind = data[y * CHUNK_SIZE + x];
+  if (kind !== TILE_WATER && kind !== TILE_MOUNTAIN) data[y * CHUNK_SIZE + x] = TILE_DIRT;
+}
+
+/**
+ * Bresenham line from a to b, paving each tile along it. Roads are 1-2
+ * tiles wide: roughly a third of the steps also pave a random adjacent tile.
+ */
+function bresenhamRoad(
+  data: Uint8Array,
+  rng: () => number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): void {
+  let x = a.x;
+  let y = a.y;
+  const tx = b.x;
+  const ty = b.y;
+  const dx = tx - x < 0 ? -(tx - x) : tx - x;
+  const dy = ty - y < 0 ? -(ty - y) : ty - y;
+  const sx = x < tx ? 1 : -1;
+  const sy = y < ty ? 1 : -1;
+  let err = dx - dy;
+  while (true) {
+    paveTile(data, x, y);
+    if (x === tx && y === ty) break;
+    if (rng() < 0.35) {
+      const dir = (rng() * 4) | 0;
+      const sideX = x + (dir === 0 ? 1 : dir === 1 ? -1 : 0);
+      const sideY = y + (dir === 2 ? 1 : dir === 3 ? -1 : 0);
+      if (sideX >= 0 && sideX < CHUNK_SIZE && sideY >= 0 && sideY < CHUNK_SIZE) {
+        paveTile(data, sideX, sideY);
+      }
+    }
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+/**
+ * One road between two settlements: a straight-ish polyline with 1-2 bend
+ * points jittered off the direct line, drawn with Bresenham. Roads only
+ * pave walkable land, so they skirt lakes and mountains instead of cutting
+ * through them.
+ */
+function drawRoadBetween(
+  data: Uint8Array,
+  rng: () => number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): void {
+  const bends = 1 + ((rng() * 2) | 0);
+  const points: { x: number; y: number }[] = [{ x: a.x, y: a.y }];
+  for (let i = 1; i <= bends; i++) {
+    const t = i / (bends + 1);
+    const px = a.x + (b.x - a.x) * t;
+    const py = a.y + (b.y - a.y) * t;
+    const jitter = 4;
+    points.push({
+      x: clampChunk((px + rng() * jitter * 2 - jitter + 0.5) | 0),
+      y: clampChunk((py + rng() * jitter * 2 - jitter + 0.5) | 0),
+    });
+  }
+  points.push({ x: b.x, y: b.y });
+  for (let i = 0; i + 1 < points.length; i++) {
+    bresenhamRoad(data, rng, points[i], points[i + 1]);
+  }
+}
+
+/**
+ * Dirt roads: every chunk picks 3-5 "settlement" points on walkable land
+ * (seeded per chunk) and connects consecutive pairs with a dirt road, giving
+ * the world a lived-in feel. Deterministic per chunk — the same seed always
+ * draws the same roads.
+ */
+function drawRoads(seed: number, cx: number, cy: number, data: Uint8Array): void {
+  const rng = chunkRng(seed, cx, cy);
+  const settlements: { x: number; y: number }[] = [];
+  const count = 3 + ((rng() * 3) | 0); // 3-5 settlements
+  for (let i = 0; i < count; i++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const x = (rng() * CHUNK_SIZE) | 0;
+      const y = (rng() * CHUNK_SIZE) | 0;
+      const kind = data[y * CHUNK_SIZE + x];
+      if (kind === TILE_WATER || kind === TILE_MOUNTAIN) continue;
+      settlements.push({ x, y });
+      break;
+    }
+  }
+  for (let i = 0; i + 1 < settlements.length; i++) {
+    drawRoadBetween(data, rng, settlements[i], settlements[i + 1]);
+  }
+}
+
+/**
  * Deterministic per-chunk generation from the world seed. Every tile is
  * classified from layered noise: elevation (fbm) decides ocean/beach/land/
  * peaks, latitude plus a temperature noise band decides snow, moisture
- * decides swamp/forest/scrubland. The world wraps like a torus — no borders. The same seed
- * always produces the same world; unvisited chunks are generated identically
- * on demand, so the 10000x10000 world costs memory only where players go.
+ * decides swamp/forest/scrubland/desert. Three post-passes shape the result:
+ * a smoothing pass removes single-tile noise, a fill pass fills leftover
+ * ponds smaller than 30 tiles, and a road pass connects 3-5 per-chunk
+ * "settlements" with dirt roads. The world wraps like a torus — no borders.
+ * The same seed always produces the same world; unvisited chunks are
+ * generated identically on demand, so the 10000x10000 world costs memory
+ * only where players go.
  */
 export function generateChunk(
   seed: number,
@@ -139,61 +362,69 @@ export function generateChunk(
 ): Uint8Array {
   const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
+  // North pole: the top rows of the map are always snow — a small guaranteed
+  // polar cap, so the world reads "frozen north" even where the noise dips.
+  const poleRows = (worldHeight / 200) | 0;
+  const POLE_ROWS = poleRows < 2 ? 2 : poleRows;
+
   for (let ly = 0; ly < CHUNK_SIZE; ly++) {
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       const wx = cx * CHUNK_SIZE + lx;
       const wy = cy * CHUNK_SIZE + ly;
 
-// Larger features: lower frequency multipliers produce continent-scale
-      // terrain instead of scattered noise ponds.  Elevation drives oceans,
-      // landmass and mountains; moisture separates forest/swamp from scrubland.
-      const elevation = fbm(seed, wx * 0.006, wy * 0.006, 4);
-      const moisture = fbm(seed + 5000, wx * 0.005, wy * 0.005, 3);
+      // Larger features: lower frequency multipliers produce continent-scale
+      // terrain instead of scattered noise ponds; fewer octaves soften it.
+      // Elevation drives oceans, landmass and mountains; moisture separates
+      // forest/swamp from scrubland and desert.
+      const elevation = fbm(seed, wx * 0.002, wy * 0.002, 3);
+      const moisture = fbm(seed + 5000, wx * 0.004, wy * 0.004, 3);
 
       // Latitude temperature (north=cold, south=hot)
       const lat = 1 - wy / (worldHeight - 1); // 1 at top, 0 at bottom
       const tempVar = fbm(seed + 10000, wx * 0.004, wy * 0.004, 2) * 0.2;
       const temperature = lat * 1.0 + tempVar;
 
-      // Deep water — larger bodies at this lowered frequency
-      if (elevation < 0.33) {
-        data[ly * CHUNK_SIZE + lx] = TILE_WATER;
-        continue;
+      let kind: number;
+      if (wy < POLE_ROWS) {
+        // The north pole cap — always snow at the very top of the map.
+        kind = TILE_SNOW;
+      } else if (elevation < 0.33) {
+        // Deep water — larger bodies at this lowered frequency
+        kind = TILE_WATER;
+      } else if (elevation < 0.43) {
+        // Wide beach band at water's edge — sand is clearly visible
+        kind = TILE_SAND;
+      } else if (elevation > 0.74) {
+        // Mountain ranges — form at high elevation
+        kind = TILE_MOUNTAIN;
+      } else if ((elevation > 0.66 && temperature > 0.55) || temperature > 0.62) {
+        // Snowy peaks at very high elevation, or cold northern latitudes
+        kind = TILE_SNOW;
+      } else if (moisture < 0.28 && elevation < 0.55) {
+        // Dry lowlands — small desert regions of sand
+        kind = TILE_SAND;
+      } else if (moisture > 0.55 && elevation < 0.5) {
+        // Wet lowlands → swamp
+        kind = TILE_SWAMP;
+      } else if (moisture > 0.45) {
+        // Moist regions → forest
+        kind = TILE_FOREST;
+      } else if (moisture < 0.28) {
+        // Dry regions → dirt/scrubland
+        kind = TILE_DIRT;
+      } else {
+        // Default
+        kind = TILE_GRASS;
       }
-      // Narrow beach band at water's edge
-      if (elevation < 0.38) {
-        data[ly * CHUNK_SIZE + lx] = TILE_SAND;
-        continue;
-      }
-      // Mountain ranges — form at high elevation
-      if (elevation > 0.74) {
-        data[ly * CHUNK_SIZE + lx] = TILE_MOUNTAIN;
-        continue;
-      }
-      // Snowy peaks at very high elevation, or cold northern latitudes
-      if ((elevation > 0.66 && temperature > 0.55) || temperature > 0.70) {
-        data[ly * CHUNK_SIZE + lx] = TILE_SNOW;
-        continue;
-      }
-      // Wet lowlands → swamp
-      if (moisture > 0.55 && elevation < 0.50) {
-        data[ly * CHUNK_SIZE + lx] = TILE_SWAMP;
-        continue;
-      }
-      // Moist regions → forest
-      if (moisture > 0.45) {
-        data[ly * CHUNK_SIZE + lx] = TILE_FOREST;
-        continue;
-      }
-      // Dry regions → dirt/scrubland
-      if (moisture < 0.28) {
-        data[ly * CHUNK_SIZE + lx] = TILE_DIRT;
-        continue;
-      }
-      // Default
-      data[ly * CHUNK_SIZE + lx] = TILE_GRASS;
+      data[ly * CHUNK_SIZE + lx] = kind;
     }
   }
+
+  // Post-passes: clean up single-tile noise, fill leftover ponds, and draw
+  // dirt roads between the chunk's settlements.
+  smoothChunk(data);
+  fillSmallWater(data);
+  drawRoads(seed, cx, cy, data);
 
   return data;
 }

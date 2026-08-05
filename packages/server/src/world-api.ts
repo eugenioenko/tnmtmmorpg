@@ -52,6 +52,13 @@ function toState(entity: {
  */
 export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps): WorldAPI {
   return {
+    width: world.width,
+    height: world.height,
+
+    getSet(k: string, v?: string): string | undefined {
+      return world.getSet(k, v);
+    },
+
     spawn(kind: string, pos: WorldCoord, components: Record<string, unknown> = {}): number {
       return world.spawn(kind, pos, components);
     },

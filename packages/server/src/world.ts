@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { TILE_GRASS, WALKABLE_TILES, type WorldCoord } from '@game/shared';
-import { saveEntity } from './db.ts';
+import { getSet as kvGetSet, saveEntity } from './db.ts';
 import type { EntityRow } from './db.ts';
 import {
   CHUNK_SHIFT,
@@ -75,6 +75,10 @@ export class World {
   private readonly entityChunks = new Map<string, Set<number>>();
   private nextId = 1;
   private rngState: number;
+  /** The persistence handle (for kv flags); undefined in db-less test worlds. */
+  private readonly db: DatabaseSync | undefined;
+  /** In-memory kv fallback for worlds constructed without a db. */
+  private readonly kv = new Map<string, string>();
 
   /** Entity ids changed since the last flush; ids that vanished mean "delete the row". */
   private readonly dirty = new Set<number>();
@@ -89,6 +93,7 @@ export class World {
     this.height = height;
     this.seed = seed ?? DEFAULT_WORLD_SEED;
     this.rngState = seed ?? Date.now() % 2 ** 32;
+    this.db = db;
     this.tiles = new ChunkStore(db, width, height, this.seed);
   }
 
@@ -96,6 +101,20 @@ export class World {
   rng(): number {
     this.rngState = (this.rngState * 1664525 + 1013904223) >>> 0;
     return this.rngState / 2 ** 32;
+  }
+
+  /**
+   * Persistent kv flag (see db.getSet): read a stored value, or store one
+   * and get the previous value back. Writes go to the database immediately
+   * when the world has one, so flags survive restarts; db-less test worlds
+   * fall back to an in-memory map. Used for one-time bootstrap flags like a
+   * feature's 'feature:seeded' marker.
+   */
+  getSet(k: string, v?: string): string | undefined {
+    if (v === undefined) return this.db ? kvGetSet(this.db, k) : this.kv.get(k);
+    const prev = this.db ? kvGetSet(this.db, k, v) : this.kv.get(k);
+    if (!this.db) this.kv.set(k, v);
+    return prev;
   }
 
   /** Spawn an entity at a position; returns its id. */
@@ -196,8 +215,6 @@ export class World {
     }
     return result;
   }
-
-
 
   /**
    * Tile kind at (x, y). Coordinates wrap around the torus — there are no

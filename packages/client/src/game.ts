@@ -107,11 +107,13 @@ export class Game {
     const app = new Application();
     await app.init({
       canvas,
+      preference: 'webgl',
       background: 0x0d0d0d,
       resizeTo: window,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
-      powerPreference: 'high-performance',
+      antialias: false,
+        failIfMajorPerformanceCaveat: false,
     });
     app.ticker.maxFPS = 60;
 

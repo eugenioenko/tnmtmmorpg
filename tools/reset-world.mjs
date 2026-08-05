@@ -12,7 +12,7 @@
 // produces byte-identical database files.
 
 import { rmSync } from 'node:fs';
-import { openDb } from '../packages/server/src/db.ts';
+import { getSet, openDb } from '../packages/server/src/db.ts';
 import { DEFAULT_WORLD_HEIGHT, DEFAULT_WORLD_WIDTH, World } from '../packages/server/src/world.ts';
 
 const DEFAULT_SEED = 42;
@@ -76,8 +76,32 @@ for (let y = CY - BOX; y <= CY + BOX; y++) {
     world.setTile(x, y, 'grass');
   }
 }
+
+// Scatter decorative bushes and trees near the centre (within 200 tiles),
+// so the world reads "lived in" from the first moment. Seeded via
+// world.rng(), so the same seed always scatters the same population.
+let decorated = 0;
+for (let attempt = 0; attempt < 500; attempt++) {
+  const x = CX - 200 + ~~(world.rng() * 400);
+  const y = CY - 200 + ~~(world.rng() * 400);
+  if (world.isWalkable(x, y) && world.tile(x, y) !== 'dirt') {
+    const kind = world.rng() > 0.7 ? 'tree' : 'bush';
+    world.spawn(`nature:${kind}`, { x, y });
+    decorated++;
+  }
+}
+
+// The nature feature (features/nature) scatters its own population on first
+// boot, guarded by the kv flag 'nature:seeded'. This world is already
+// decorated, so claim the flag here to keep the two mechanisms from
+// double-seeding.
+getSet(db, 'nature:seeded', '1');
+
 world.flushDirty(db);
 
 db.close();
 
-console.log(`World reset: ${width}x${height} seed ${seed} at ${dbPath}`);
+console.log(
+  `World reset: ${width}x${height} seed ${seed} at ${dbPath} ` +
+    `(${decorated} bushes/trees scattered near the centre)`,
+);

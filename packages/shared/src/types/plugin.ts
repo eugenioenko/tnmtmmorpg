@@ -18,6 +18,18 @@ export const FEATURE_API_VERSION = 1;
  * exposed to features; everything a feature can do goes through this.
  */
 export interface WorldAPI {
+  /** World dimensions in tiles; the centre ((width/2, height/2)) is where players spawn. */
+  readonly width: number;
+  readonly height: number;
+  /**
+   * Persistent kv flag: without a value, returns the stored string (or
+   * undefined when never set); with a value, stores it and returns the
+   * previous one. Writes land in the database immediately, so flags survive
+   * restarts. The standard pattern for one-time bootstrap work is
+   * `if (world.getSet('feature:done', '1')) return;` — the flag is checked
+   * and claimed in one call.
+   */
+  getSet(key: string, value?: string): string | undefined;
   /** Spawn an entity of `kind` at a position; returns its id. */
   spawn(kind: string, pos: WorldCoord, components?: Record<string, unknown>): number;
   /** A detached snapshot of an entity's state, or undefined if it is gone. */
