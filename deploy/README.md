@@ -1,5 +1,7 @@
 # Deploying
 
+**Live: <https://tnmtmmorpg.yy-dev.top/>**
+
 Merge to `main` → GitHub Actions builds one image, pushes it to GHCR, and
 restarts the container on the VPS. Caddy serves the client and proxies the
 game socket.
