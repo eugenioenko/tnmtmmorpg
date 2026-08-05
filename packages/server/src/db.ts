@@ -78,18 +78,26 @@ export function saveEntity(db: DatabaseSync, entity: Entity): void {
   ).run(entity.id, entity.kind, entity.chunk, data, rev);
 }
 
-export function saveTile(db: DatabaseSync, chunk: string, data: Uint8Array): void {
-  db.prepare('INSERT OR REPLACE INTO tiles (chunk, data) VALUES (?, ?)').run(chunk, data);
+/** Persist one chunk (its raw tile data, one byte per tile). */
+export function saveChunk(db: DatabaseSync, chunkKey: string, data: Uint8Array): void {
+  db.prepare('INSERT OR REPLACE INTO tiles (chunk, data) VALUES (?, ?)').run(chunkKey, data);
 }
 
-export function loadAll(db: DatabaseSync): { entities: EntityRow[]; tiles: TileRow[] } {
+/** Every persisted chunk, keyed by its 'cx,cy' chunk key. */
+export function loadChunks(db: DatabaseSync): Map<string, Uint8Array> {
+  const rows = db
+    .prepare('SELECT chunk, data FROM tiles ORDER BY chunk')
+    .all() as unknown as TileRow[];
+  const chunks = new Map<string, Uint8Array>();
+  for (const row of rows) chunks.set(row.chunk, row.data);
+  return chunks;
+}
+
+export function loadAll(db: DatabaseSync): { entities: EntityRow[] } {
   const entities = db
     .prepare('SELECT id, kind, chunk, data, rev FROM entities ORDER BY id')
     .all() as unknown as EntityRow[];
-  const tiles = db
-    .prepare('SELECT chunk, data FROM tiles ORDER BY chunk')
-    .all() as unknown as TileRow[];
-  return { entities, tiles };
+  return { entities };
 }
 
 export function savePlayer(db: DatabaseSync, player: PlayerRow): void {

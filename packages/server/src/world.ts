@@ -1,9 +1,35 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { WorldCoord } from '@game/shared';
-import { saveEntity, saveTile } from './db.ts';
+import { saveEntity } from './db.ts';
 import type { EntityRow } from './db.ts';
+import {
+  CHUNK_SHIFT,
+  CHUNK_SIZE,
+  chunkKey,
+  generateChunk as generateChunkData,
+  worldToChunk,
+  ChunkStore,
+  type TileKind,
+} from './world-chunks.ts';
 
-export type TileKind = 'grass' | 'wall';
+// Re-exported so existing importers keep working unchanged.
+export {
+  CHUNK_SIZE,
+  CHUNK_SHIFT,
+  TILE_GRASS,
+  TILE_NAMES,
+  chunkKey,
+  worldToChunk,
+  type TileKind,
+} from './world-chunks.ts';
+
+/** Tiles visible in each horizontal direction from a player. */
+export const VIEW_RADIUS_X = 30;
+/** Tiles visible in each vertical direction from a player. */
+export const VIEW_RADIUS_Y = 20;
+export const DEFAULT_WORLD_WIDTH = 10000;
+export const DEFAULT_WORLD_HEIGHT = 10000;
+export const DEFAULT_WORLD_SEED = 42;
 
 export interface Entity {
   id: number;
@@ -11,64 +37,59 @@ export interface Entity {
   x: number;
   y: number;
   components: Record<string, unknown>;
-  /** Chunk key this entity lives in. The world is one chunk today, so always '0,0'. */
+  /** Chunk key this entity lives in (e.g. '3,7'); maintained by the spatial index. */
   chunk: string;
 }
 
-export const DEFAULT_WIDTH = 20;
-export const DEFAULT_HEIGHT = 15;
-
-/** Chunk key holding the entire tilemap while the world is a single chunk. */
-export const TILE_CHUNK = '0,0';
-
 /**
- * The world owns all game state: the entity store and the tile map.
+ * The world owns all game state: the entity store, the entity spatial index
+ * and a sparse, chunk-based tile map.
  *
- * It is deliberately a dumb state bag with a small mutation surface
- * (spawn/get/query/despawn/tile/setTile) so that later phases can bolt
- * persistence and a feature plugin system on top without changing how
- * game code talks to it.
+ * The tile map is `Map<chunkKey, Uint8Array>` — one 64x64 array per chunk,
+ * allocated lazily (see ChunkStore in world-chunks.ts). An unvisited
+ * 10000x10000 world costs a few bytes of map overhead; memory grows only
+ * with the area players actually touch. Chunks are generated
+ * deterministically from (world seed, chunk coords) on first read, and
+ * modified chunks are persisted individually.
  *
  * Persistence: every mutation marks something dirty (an entity id in
- * `dirty`, or the whole tilemap), and `flushDirty(db)` writes the dirty
- * state out. An id in the dirty set that is no longer in the world means
- * the entity was despawned, so its row is deleted. `loadFromRows` /
- * `loadTilesBlob` restore state saved by an earlier flush.
+ * `dirty`, a chunk key in ChunkStore's dirty set), and `flushDirty(db)`
+ * writes the dirty state out. An id in the dirty set that is no longer in
+ * the world means the entity was despawned, so its row is deleted.
+ * `loadFromRows` / `loadChunks` restore state saved by an earlier flush.
  *
  * `rng()` is a small seeded LCG. `Math.random` is banned by lint; every
- * bit of randomness in the world must flow through here so that worlds
- * are reproducible from a seed.
+ * bit of randomness in the world must flow through here (or through the
+ * per-chunk LCG) so that worlds are reproducible from a seed.
  */
 export class World {
   readonly width: number;
   readonly height: number;
+  /** Seed for deterministic chunk generation. */
+  readonly seed: number;
 
   private readonly entities = new Map<number, Entity>();
-  private tiles: TileKind[][];
+  /** The chunk-based tile map; all tile/chunk ops delegate to it. */
+  private readonly tiles: ChunkStore;
+  /** Entity spatial index: chunk key -> entity ids in that chunk. */
+  private readonly entityChunks = new Map<string, Set<number>>();
   private nextId = 1;
   private rngState: number;
 
   /** Entity ids changed since the last flush; ids that vanished mean "delete the row". */
   private readonly dirty = new Set<number>();
-  private tileDirty = false;
 
-  constructor(width: number = DEFAULT_WIDTH, height: number = DEFAULT_HEIGHT, seed?: number) {
+  constructor(
+    width: number = DEFAULT_WORLD_WIDTH,
+    height: number = DEFAULT_WORLD_HEIGHT,
+    seed?: number,
+    db?: DatabaseSync,
+  ) {
     this.width = width;
     this.height = height;
+    this.seed = seed ?? DEFAULT_WORLD_SEED;
     this.rngState = seed ?? Date.now() % 2 ** 32;
-
-    this.tiles = Array.from({ length: height }, () =>
-      Array.from({ length: width }, () => 'grass' as TileKind),
-    );
-    // Walls around the edges; the inside is open grass.
-    for (let x = 0; x < width; x++) {
-      this.tiles[0][x] = 'wall';
-      this.tiles[height - 1][x] = 'wall';
-    }
-    for (let y = 0; y < height; y++) {
-      this.tiles[y][0] = 'wall';
-      this.tiles[y][width - 1] = 'wall';
-    }
+    this.tiles = new ChunkStore(db, width, height, this.seed);
   }
 
   /** Deterministic pseudo-random number in [0, 1). Never use Math.random. */
@@ -80,7 +101,8 @@ export class World {
   /** Spawn an entity at a position; returns its id. */
   spawn(kind: string, pos: WorldCoord, components: Record<string, unknown> = {}): number {
     const id = this.nextId++;
-    this.entities.set(id, { id, kind, x: pos.x, y: pos.y, components, chunk: TILE_CHUNK });
+    this.entities.set(id, { id, kind, x: pos.x, y: pos.y, components, chunk: '' });
+    this.updateEntityChunk(id, pos.x, pos.y);
     this.dirty.add(id);
     return id;
   }
@@ -101,12 +123,33 @@ export class World {
     return [...this.entities.values()];
   }
 
+  /**
+   * Move an entity to a tile, keeping the spatial index and the dirty set in
+   * sync. Callers validate walkability themselves.
+   */
+  moveEntity(id: number, x: number, y: number): void {
+    const entity = this.entities.get(id);
+    if (!entity) return;
+    entity.x = x;
+    entity.y = y;
+    this.updateEntityChunk(id, x, y);
+    this.dirty.add(id);
+  }
+
   despawn(id: number): void {
+    const entity = this.entities.get(id);
+    if (entity) {
+      const set = this.entityChunks.get(entity.chunk);
+      if (set) {
+        set.delete(id);
+        if (set.size === 0) this.entityChunks.delete(entity.chunk);
+      }
+    }
     this.entities.delete(id);
     this.dirty.add(id);
   }
 
-  /** Record that an entity was modified in place (e.g. a move). */
+  /** Record that an entity was modified in place (e.g. a component change). */
   markDirty(id: number): void {
     this.dirty.add(id);
   }
@@ -116,26 +159,147 @@ export class World {
     return this.dirty.size;
   }
 
-  /** Tile kind at (x, y); out-of-bounds reads as 'wall'. */
-  tile(x: number, y: number): TileKind {
-    return this.inBounds(x, y) ? this.tiles[y][x] : 'wall';
+  /** Number of live entities in the world (players, NPCs, items, ...). */
+  get entityCount(): number {
+    return this.entities.size;
   }
 
-  setTile(x: number, y: number, kind: TileKind): void {
-    if (this.inBounds(x, y)) {
-      this.tiles[y][x] = kind;
-      this.tileDirty = true;
-    }
-  }
-
-  isWalkable(x: number, y: number): boolean {
-    return this.inBounds(x, y) && this.tiles[y][x] !== 'wall';
+  /** Number of tile chunks currently loaded in memory. */
+  get chunkCount(): number {
+    return this.tiles.size;
   }
 
   /**
-   * Write every dirty entity (and the tilemap, if it changed) to the db.
-   * Entities that were despawned since the last flush have no in-memory
-   * entity anymore, so their rows are deleted.
+   * Every entity whose chunk is within `viewRadiusX`/`viewRadiusY` tiles of
+   * chunk (cx, cy). This is a superset of the exact tile viewport — callers
+   * filter by exact coordinates.
+   */
+  entitiesInView(cx: number, cy: number, viewRadiusX: number, viewRadiusY: number): Entity[] {
+    const radiusX = (viewRadiusX + (CHUNK_SIZE - 1)) >> CHUNK_SHIFT;
+    const radiusY = (viewRadiusY + (CHUNK_SIZE - 1)) >> CHUNK_SHIFT;
+    const found = new Set<number>();
+    for (let cy2 = cy - radiusY; cy2 <= cy + radiusY; cy2++) {
+      for (let cx2 = cx - radiusX; cx2 <= cx + radiusX; cx2++) {
+        const set = this.entityChunks.get(chunkKey(cx2, cy2));
+        if (!set) continue;
+        for (const id of set) found.add(id);
+      }
+    }
+    const result: Entity[] = [];
+    for (const id of found) {
+      const entity = this.entities.get(id);
+      if (entity) result.push(entity);
+    }
+    return result;
+  }
+
+  private inBounds(x: number, y: number): boolean {
+    return x >= 0 && y >= 0 && x < this.width && y < this.height;
+  }
+
+  private isBorder(x: number, y: number): boolean {
+    return x === 0 || y === 0 || x === this.width - 1 || y === this.height - 1;
+  }
+
+  /**
+   * Tile kind at (x, y). Out of bounds and the world border read as 'wall'.
+   * Unloaded chunks are generated deterministically on first read, so every
+   * in-bounds coordinate has a stable answer.
+   */
+  tile(x: number, y: number): TileKind {
+    if (!this.inBounds(x, y) || this.isBorder(x, y)) return 'wall';
+    return this.tiles.tileAt(x, y);
+  }
+
+  setTile(x: number, y: number, kind: string): void {
+    if (!this.inBounds(x, y)) return;
+    this.tiles.setTile(x, y, kind);
+  }
+
+  isWalkable(x: number, y: number): boolean {
+    return this.inBounds(x, y) && this.tile(x, y) !== 'wall';
+  }
+
+  /**
+   * True when a player entity is within `radius` tiles (Chebyshev) of
+   * (x, y). Uses the spatial index, so it costs a handful of chunk-set
+   * lookups regardless of how many entities the world holds. This is the
+   * spatial-sleeping probe: an NPC whose whole neighborhood holds no player
+   * costs zero CPU per tick because its AI never runs.
+   */
+  hasPlayerNear(x: number, y: number, radius: number): boolean {
+    const { cx, cy } = worldToChunk(x, y);
+    const chunkRadius = ((radius + CHUNK_SIZE - 1) / CHUNK_SIZE) | 0;
+    for (let dcy = -chunkRadius; dcy <= chunkRadius; dcy++) {
+      for (let dcx = -chunkRadius; dcx <= chunkRadius; dcx++) {
+        const set = this.entityChunks.get(chunkKey(cx + dcx, cy + dcy));
+        if (!set) continue;
+        for (const id of set) {
+          const entity = this.entities.get(id);
+          if (entity && entity.kind === 'player') return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Every entity id within `radius` tiles (Chebyshev) of (x, y). Uses the
+   * spatial index, so it scans only the chunks overlapping the radius
+   * instead of the whole entity store. This is the spatial-event probe:
+   * emitNear() delivers to exactly these entities and no others.
+   */
+  entityIdsInRadius(x: number, y: number, radius: number): Set<number> {
+    const result = new Set<number>();
+    const chunkRadius = ((radius + CHUNK_SIZE - 1) / CHUNK_SIZE) | 0;
+    const { cx, cy } = worldToChunk(x, y);
+
+    for (let dcx = -chunkRadius; dcx <= chunkRadius; dcx++) {
+      for (let dcy = -chunkRadius; dcy <= chunkRadius; dcy++) {
+        const key = chunkKey(cx + dcx, cy + dcy);
+        const ids = this.entityChunks.get(key);
+        if (!ids) continue;
+        for (const id of ids) {
+          const entity = this.get(id);
+          if (!entity) continue;
+          // Chunk proximity is only a superset — check the actual Chebyshev
+          // distance before admitting an entity.
+          const dx = entity.x - x;
+          const dy = entity.y - y;
+          const adx = dx < 0 ? -dx : dx;
+          const ady = dy < 0 ? -dy : dy;
+          if (adx <= radius && ady <= radius) result.add(id);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The chunk at (cx, cy), generating it deterministically on first use.
+   * Freshly generated chunks with any non-grass tile are persisted to the db
+   * immediately (when the world was constructed with one), so generated
+   * content survives restarts and the db mirrors exactly what was explored.
+   */
+  ensureChunk(cx: number, cy: number): Uint8Array {
+    return this.tiles.ensure(cx, cy);
+  }
+
+  /**
+   * Deterministic per-chunk generation from the world seed: the world border
+   * is a wall, plus 2-8 small wall clusters of 1-5 tiles at seeded random
+   * positions. Everything else stays 0 (grass). The same seed always
+   * produces the same world.
+   */
+  generateChunk(cx: number, cy: number): Uint8Array {
+    return generateChunkData(this.seed, cx, cy, this.width, this.height);
+  }
+
+  /**
+   * Write every dirty entity and dirty chunk to the db. Entities that were
+   * despawned since the last flush have no in-memory entity anymore, so
+   * their rows are deleted. Chunks that were dirtied but never loaded
+   * cannot happen (setTile loads before it writes).
    */
   flushDirty(db: DatabaseSync): void {
     const deleteRow = db.prepare('DELETE FROM entities WHERE id = ?');
@@ -145,16 +309,14 @@ export class World {
       else deleteRow.run(id);
     }
     this.dirty.clear();
-    if (this.tileDirty) {
-      saveTile(db, TILE_CHUNK, this.tilesToBlob());
-      this.tileDirty = false;
-    }
+    this.tiles.flushDirty(db);
   }
 
   /**
    * Restore entities saved by an earlier flush. Position and components
    * come from the `data` blob; the blob layout may grow, but never shrink
-   * or move — unknown fields are ignored so old rows always load.
+   * or move — unknown fields are ignored so old rows always load. The
+   * spatial index is rebuilt from the restored positions.
    */
   loadFromRows(rows: EntityRow[]): void {
     for (const row of rows) {
@@ -180,8 +342,9 @@ export class World {
         x: parsed.x,
         y: parsed.y,
         components: parsed.components as Record<string, unknown>,
-        chunk: row.chunk || TILE_CHUNK,
+        chunk: '',
       });
+      this.updateEntityChunk(row.id, parsed.x, parsed.y);
       if (row.id >= this.nextId) this.nextId = row.id + 1;
     }
     if (rows.length > 0) {
@@ -189,44 +352,34 @@ export class World {
     }
   }
 
-  /** Serialize the whole tilemap as one JSON blob (single chunk for now). */
-  tilesToBlob(): Buffer {
-    return Buffer.from(
-      JSON.stringify({ width: this.width, height: this.height, tiles: this.tiles }),
-      'utf8',
-    );
+  /**
+   * Restore persisted chunks (see db.loadChunks). Rows that do not match the
+   * current chunk layout are skipped with a warning.
+   */
+  loadChunks(chunks: Map<string, Uint8Array>): void {
+    this.tiles.load(chunks);
   }
 
   /**
-   * Restore the tilemap from a blob written by `tilesToBlob`. Returns false
-   * (and keeps the current map) if the blob is corrupt or sized differently.
+   * Keep the spatial index in sync with an entity's position: remove it from
+   * its old chunk set and add it to the chunk containing (x, y).
    */
-  loadTilesBlob(data: Uint8Array): boolean {
-    try {
-      const parsed = JSON.parse(Buffer.from(data).toString('utf8')) as {
-        width: unknown;
-        height: unknown;
-        tiles: unknown;
-      };
-      if (
-        typeof parsed.width !== 'number' ||
-        typeof parsed.height !== 'number' ||
-        !Array.isArray(parsed.tiles) ||
-        parsed.tiles.length !== this.height ||
-        parsed.tiles.some(
-          (row) => !Array.isArray(row) || row.length !== this.width,
-        )
-      ) {
-        return false;
-      }
-      this.tiles = parsed.tiles as TileKind[][];
-      return true;
-    } catch {
-      return false;
+  private updateEntityChunk(id: number, x: number, y: number): void {
+    const entity = this.entities.get(id);
+    if (!entity) return;
+    const key = chunkKey(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT);
+    if (entity.chunk === key) return;
+    const oldSet = this.entityChunks.get(entity.chunk);
+    if (oldSet) {
+      oldSet.delete(id);
+      if (oldSet.size === 0) this.entityChunks.delete(entity.chunk);
     }
-  }
-
-  private inBounds(x: number, y: number): boolean {
-    return x >= 0 && y >= 0 && x < this.width && y < this.height;
+    entity.chunk = key;
+    let set = this.entityChunks.get(key);
+    if (!set) {
+      set = new Set();
+      this.entityChunks.set(key, set);
+    }
+    set.add(id);
   }
 }

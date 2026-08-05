@@ -28,12 +28,15 @@ import {
   itemsByTag,
   type CraftingComponent,
   type CraftingJob,
+  type DeltaSnapshot,
+  type Direction,
   type EntityState,
+  type FullSnapshot,
   type Intent,
   type InventoryComponent,
   type ItemDef,
   type RecipeDef,
-  type Snapshot,
+  type TileState,
 } from '@game/shared';
 import { loadAll, openDb } from './db.ts';
 import { World } from './world.ts';
@@ -466,6 +469,19 @@ function unitTests(): void {
 
 // ── integration: the real server over websockets ───────────────────────────
 
+/**
+ * The client's accumulated view of the world, materialized from the
+ * full/delta messages the server sends (fulls replace it, deltas patch it).
+ * Predicates and helpers read entities/tiles from this, exactly as they did
+ * from the old all-in-one snapshot.
+ */
+interface LocalSnapshot {
+  t: 'snapshot';
+  tick: number;
+  entities: EntityState[];
+  tiles: TileState[];
+}
+
 function invOfEntity(entity: EntityState | undefined): InventoryComponent | null {
   if (!entity) return null;
   const inv = entity.components.inventory;
@@ -482,15 +498,15 @@ function totalOfEntity(entity: EntityState | undefined, itemId: string): number 
     .reduce((sum, slot) => sum + slot.count, 0);
 }
 
-function byId(snapshot: Snapshot, id: number): EntityState | undefined {
+function byId(snapshot: LocalSnapshot, id: number): EntityState | undefined {
   return snapshot.entities.find((e) => e.id === id);
 }
 
-function stationOf(snapshot: Snapshot): EntityState | undefined {
+function stationOf(snapshot: LocalSnapshot): EntityState | undefined {
   return snapshot.entities.find((e) => e.kind === '_example:workbench');
 }
 
-function craftingAt(snapshot: Snapshot, stationId: number): CraftingComponent | null {
+function craftingAt(snapshot: LocalSnapshot, stationId: number): CraftingComponent | null {
   const crafting = byId(snapshot, stationId)?.components.crafting;
   return isCrafting(crafting) ? crafting : null;
 }
@@ -499,7 +515,10 @@ class TestClient {
   readonly entityId: number;
   private readonly ws: WebSocket;
   private readonly label: string;
-  private readonly snapshots: Snapshot[] = [];
+  private readonly snapshots: LocalSnapshot[] = [];
+  /** Accumulated world model: full snapshots replace it, deltas patch it. */
+  private readonly entities = new Map<number, EntityState>();
+  private readonly tiles = new Map<string, string>(); // "x,y" → kind
 
   private constructor(ws: WebSocket, entityId: number, label: string) {
     this.ws = ws;
@@ -531,32 +550,52 @@ class TestClient {
       } catch {
         return;
       }
-      if (
-        typeof msg === 'object' &&
-        msg !== null &&
-        (msg as Record<string, unknown>).t === 'snapshot'
-      ) {
-        client.snapshots.push(msg as Snapshot);
-        if (client.snapshots.length > 500) client.snapshots.shift();
-      }
+      if (typeof msg !== 'object' || msg === null) return;
+      const t = (msg as Record<string, unknown>).t;
+      if (t === 'full' || t === 'delta') client.applyState(msg as FullSnapshot | DeltaSnapshot);
     });
     return client;
+  }
+
+  /** Full snapshots replace the model; deltas patch it; both materialize a LocalSnapshot. */
+  private applyState(msg: FullSnapshot | DeltaSnapshot): void {
+    if (msg.t === 'full') {
+      this.entities.clear();
+      for (const entity of msg.entities) this.entities.set(entity.id, entity);
+      this.tiles.clear();
+      for (const tile of msg.tiles) this.tiles.set(`${tile.x},${tile.y}`, tile.kind);
+    } else {
+      for (const id of msg.removedEntities) this.entities.delete(id);
+      for (const entity of msg.entities) this.entities.set(entity.id, entity);
+      for (const tile of msg.tiles) this.tiles.set(`${tile.x},${tile.y}`, tile.kind);
+      for (const tile of msg.removedTiles) this.tiles.delete(`${tile.x},${tile.y}`);
+    }
+    this.snapshots.push({
+      t: 'snapshot',
+      tick: msg.tick,
+      entities: [...this.entities.values()],
+      tiles: [...this.tiles].map(([key, kind]) => {
+        const comma = key.indexOf(',');
+        return { x: Number(key.slice(0, comma)), y: Number(key.slice(comma + 1)), kind };
+      }),
+    });
+    if (this.snapshots.length > 500) this.snapshots.shift();
   }
 
   send(intent: Intent): void {
     this.ws.send(JSON.stringify(intent));
   }
 
-  latest(): Snapshot | undefined {
+  latest(): LocalSnapshot | undefined {
     return this.snapshots[this.snapshots.length - 1];
   }
 
   /** Resolve with the next snapshot (arriving after the call) that satisfies the predicate. */
   async waitFor(
-    predicate: (snapshot: Snapshot) => boolean,
+    predicate: (snapshot: LocalSnapshot) => boolean,
     what: string,
     timeoutMs = 8000,
-  ): Promise<Snapshot> {
+  ): Promise<LocalSnapshot> {
     const from = this.snapshots.length;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -574,7 +613,7 @@ class TestClient {
 
 /** The nearest non-wall tile on a Chebyshev ring around (x, y). */
 function walkableNear(
-  snapshot: Snapshot,
+  snapshot: LocalSnapshot,
   x: number,
   y: number,
   radius: number,
@@ -605,29 +644,104 @@ function walkableNear(
   return { x, y }; // fallback: nowhere to walk — use the tile we are on
 }
 
-/** Queue move intents that walk this client in a straight line to a tile. */
-function walkTo(client: TestClient, targetX: number, targetY: number): void {
-  const start = byId(client.latest()!, client.entityId)!;
-  const moves: Intent[] = [];
-  let x = start.x;
-  let y = start.y;
-  while (x < targetX) {
-    moves.push({ t: 'intent', kind: 'move', dir: 'e' });
-    x++;
+const MOVE_DELTA: Record<Direction, [number, number]> = {
+  n: [0, -1],
+  s: [0, 1],
+  e: [1, 0],
+  w: [-1, 0],
+};
+
+function absValue(value: number): number {
+  return value < 0 ? -value : value;
+}
+
+/**
+ * Walk toward a target tile, sliding around walls seen in the latest
+ * snapshot. The world is procedurally generated (scattered wall clusters),
+ * so straight lines can be blocked; short segments are re-planned from the
+ * live position whenever a move is rejected. A target that is itself a wall
+ * (a tile no one can stand on) is redirected to the nearest non-wall tile
+ * on a small ring around it.
+ */
+async function walkTo(client: TestClient, targetX: number, targetY: number): Promise<void> {
+  for (let guard = 0; guard < 400; guard++) {
+    const self = byId(client.latest()!, client.entityId);
+    if (!self) return;
+    if (self.x === targetX && self.y === targetY) return;
+    const walls = new Set(
+      client
+        .latest()!
+        .tiles.filter((t) => t.kind === 'wall')
+        .map((t) => `${t.x},${t.y}`),
+    );
+    let goalX = targetX;
+    let goalY = targetY;
+    if (walls.has(`${goalX},${goalY}`)) {
+      // The goal cannot be stood on: aim at the nearest walkable ring tile.
+      let found = false;
+      for (let r = 1; r <= 4 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            if (absValue(dx) !== r && absValue(dy) !== r) continue; // ring edge only
+            if (!walls.has(`${goalX + dx},${goalY + dy}`)) {
+              goalX += dx;
+              goalY += dy;
+              found = true;
+            }
+          }
+        }
+      }
+    }
+    const moves: Intent[] = [];
+    let x = self.x;
+    let y = self.y;
+    let lastX = x;
+    let lastY = y;
+    for (let step = 0; step < 20 && (x !== goalX || y !== goalY); step++) {
+      const dx = goalX - x;
+      const dy = goalY - y;
+      const dir: Direction =
+        absValue(dx) > absValue(dy) ? (dx > 0 ? 'e' : 'w') : dy > 0 ? 's' : 'n';
+      const delta = MOVE_DELTA[dir];
+      const nx = x + delta[0];
+      const ny = y + delta[1];
+      if (!walls.has(`${nx},${ny}`) && nx >= 0 && ny >= 0) {
+        moves.push({ t: 'intent', kind: 'move', dir });
+        x = nx;
+        y = ny;
+      } else {
+        // Blocked: slide perpendicular around the wall.
+        const perps: Direction[] = dir === 'e' || dir === 'w' ? ['s', 'n'] : ['e', 'w'];
+        let slid = false;
+        for (const p of perps) {
+          const pd = MOVE_DELTA[p];
+          const px = x + pd[0];
+          const py = y + pd[1];
+          if (!walls.has(`${px},${py}`) && px >= 0 && py >= 0) {
+            moves.push({ t: 'intent', kind: 'move', dir: p });
+            x = px;
+            y = py;
+            slid = true;
+            break;
+          }
+        }
+        if (!slid) break; // boxed in: re-plan on the next round
+      }
+      lastX = x;
+      lastY = y;
+    }
+    if (moves.length === 0) return; // completely boxed in: give up loudly later
+    for (const move of moves) client.send(move);
+    // Wait for the segment to land (moves are drained at 10Hz); if any move
+    // was rejected, re-plan from the live position.
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      const e = byId(client.latest()!, client.entityId);
+      if (e && e.x === lastX && e.y === lastY) break;
+      if (Date.now() > deadline) break;
+      await sleep(50);
+    }
   }
-  while (x > targetX) {
-    moves.push({ t: 'intent', kind: 'move', dir: 'w' });
-    x--;
-  }
-  while (y < targetY) {
-    moves.push({ t: 'intent', kind: 'move', dir: 's' });
-    y++;
-  }
-  while (y > targetY) {
-    moves.push({ t: 'intent', kind: 'move', dir: 'n' });
-    y--;
-  }
-  for (const move of moves) client.send(move);
 }
 
 async function waitArrived(
@@ -636,10 +750,14 @@ async function waitArrived(
   targetY: number,
   what: string,
 ): Promise<void> {
-  await client.waitFor((s) => {
-    const e = byId(s, client.entityId);
-    return e !== undefined && e.x === targetX && e.y === targetY;
-  }, what);
+  await client.waitFor(
+    (s) => {
+      const e = byId(s, client.entityId);
+      return e !== undefined && e.x === targetX && e.y === targetY;
+    },
+    what,
+    30000,
+  );
 }
 
 async function integrationTests(): Promise<void> {
@@ -743,7 +861,7 @@ async function integrationTests(): Promise<void> {
 
     // ── walking away mid-craft: the job is not cancelled, not duplicated ──
     const walkAway = { x: aPos.x + 3, y: aPos.y };
-    walkTo(a, walkAway.x, walkAway.y);
+    await walkTo(a, walkAway.x, walkAway.y);
     await waitArrived(a, walkAway.x, walkAway.y, 'A walked away mid-craft');
     await a.waitFor(
       (s) => totalOfEntity(byId(s, a.entityId), '_example:glowing_essence') === 1,
@@ -761,7 +879,7 @@ async function integrationTests(): Promise<void> {
     );
 
     // Walk back to the station for everything that follows.
-    walkTo(a, station.x, station.y);
+    await walkTo(a, station.x, station.y);
     await waitArrived(a, station.x, station.y, 'A walked back to the station');
 
     // ── forged craft for a recipe whose inputs you lack: rejected ──
@@ -855,14 +973,14 @@ async function integrationTests(): Promise<void> {
       (s) => s.itemId === 'farming:seed',
     );
     const seedDropTile = walkableNear(freshSnap, station.x, station.y, 2);
-    walkTo(a, seedDropTile.x, seedDropTile.y);
+    await walkTo(a, seedDropTile.x, seedDropTile.y);
     await waitArrived(a, seedDropTile.x, seedDropTile.y, 'A moved to a free tile');
     a.send({ t: 'intent', kind: 'drop', slot: seedSlot });
     await a.waitFor(
       (s) => totalOfEntity(byId(s, a.entityId), 'farming:seed') === 0,
       'leftover seeds dropped',
     );
-    walkTo(a, station.x, station.y);
+    await walkTo(a, station.x, station.y);
     await waitArrived(a, station.x, station.y, 'A back at the station');
 
     // ── two players at the same station: parallel jobs ──
@@ -871,7 +989,7 @@ async function integrationTests(): Promise<void> {
       (s) => totalOfEntity(byId(s, b.entityId), '_example:stone') === 3,
       'B holds 3 stone',
     );
-    walkTo(b, station.x, station.y);
+    await walkTo(b, station.x, station.y);
     await waitArrived(b, station.x, station.y, 'B stands at the station');
     a.send({ t: 'intent', kind: '_example:give', item: '_example:herb', count: 2 });
     a.send({ t: 'intent', kind: '_example:give', item: '_example:vial', count: 1 });
@@ -1005,7 +1123,7 @@ async function integrationTests(): Promise<void> {
       (s) => totalOfEntity(byId(s, d.entityId), '_example:stone') === 3,
       'D holds 3 stone',
     );
-    walkTo(d, station.x, station.y);
+    await walkTo(d, station.x, station.y);
     await waitArrived(d, station.x, station.y, 'D stands at the station');
     d.send({
       t: 'intent',

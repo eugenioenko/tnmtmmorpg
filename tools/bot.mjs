@@ -4,10 +4,10 @@
 //   pnpm bot -- --count 2
 //
 // Each bot connects exactly like a browser player (welcome -> recipes ->
-// snapshots -> intents), then plays a simple state machine:
+// full/delta snapshots -> intents), then plays a simple state machine:
 //
 //   WANDER  — every 2-5 seconds pick a direction (wall-aware via the tile
-//             map from snapshots) and send a move intent
+//             map accumulated from full/delta messages) and send a move intent
 //   PICKUP  — when standing on a ground item, send a pickup intent
 //   CRAFT   — when adjacent to a station, craft the first recipe for that
 //             station whose inputs it can fully verify from its inventory
@@ -172,8 +172,12 @@ class Bot {
         this.log(`received ${this.recipes.length} recipe(s)`);
         break;
 
-      case 'snapshot':
-        this.onSnapshot(message);
+      case 'full':
+        this.onFull(message);
+        break;
+
+      case 'delta':
+        this.onDelta(message);
         break;
 
       default:
@@ -182,7 +186,8 @@ class Bot {
     }
   }
 
-  onSnapshot(snapshot) {
+  /** The first world message is always a full: it replaces the accumulated model. */
+  onFull(snapshot) {
     if (this.setupAt === -1) {
       this.setupAt = performance.now();
       this.nextWanderAt = this.setupAt + 500;
@@ -192,16 +197,37 @@ class Bot {
     this.tiles = new Map();
     for (const tile of snapshot.tiles) this.tiles.set(`${tile.x},${tile.y}`, tile.kind);
     this.entities = snapshot.entities;
-    this.self = snapshot.entities.find((e) => e.id === this.entityId) ?? null;
+    this.afterWorldUpdate(snapshot);
+  }
 
-    if (snapshot.disabledFeatures && !this.reportedDisabled) {
+  /** Deltas patch the accumulated model on top of what the client already knows. */
+  onDelta(delta) {
+    if (this.setupAt === -1) return; // the first world message is always a full
+
+    for (const id of delta.removedEntities ?? []) {
+      this.entities = this.entities.filter((e) => e.id !== id);
+    }
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    for (const entity of delta.entities ?? []) byId.set(entity.id, entity);
+    this.entities = [...byId.values()];
+    for (const tile of delta.tiles ?? []) this.tiles.set(`${tile.x},${tile.y}`, tile.kind);
+    for (const tile of delta.removedTiles ?? []) this.tiles.delete(`${tile.x},${tile.y}`);
+
+    this.afterWorldUpdate(delta);
+  }
+
+  /** Shared tail of full/delta handling: refresh self + inventory, then act. */
+  afterWorldUpdate(msg) {
+    this.self = this.entities.find((e) => e.id === this.entityId) ?? null;
+
+    if (msg.disabledFeatures && !this.reportedDisabled) {
       this.reportedDisabled = true;
-      this.log(`server auto-disabled feature(s): ${snapshot.disabledFeatures.join(', ')}`);
+      this.log(`server auto-disabled feature(s): ${msg.disabledFeatures.join(', ')}`);
     }
 
     if (!this.self) return; // despawned between ticks — nothing to do
 
-    // Inventory view: recompute from the authoritative snapshot every time.
+    // Inventory view: recompute from the authoritative state every message.
     const inv = this.self.components?.inventory;
     this.inventory = new Map();
     this.inventorySlots = [];
@@ -295,9 +321,13 @@ class Bot {
     return null;
   }
 
-  /** Walkable = not a wall in the latest snapshot (out of bounds reads wall). */
+  /**
+   * Walkable = not a wall in the latest snapshot. Snapshots are sparse:
+   * only non-grass tiles are listed, so anything unseen is grass — and the
+   * world edge is always listed as wall, so borders stay blocked.
+   */
   walkable(x, y) {
-    return (this.tiles.get(`${x},${y}`) ?? 'wall') !== 'wall';
+    return (this.tiles.get(`${x},${y}`) ?? 'grass') !== 'wall';
   }
 
   chooseMove() {

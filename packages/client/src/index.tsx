@@ -1,11 +1,14 @@
 import { createRoot } from 'react-dom/client';
 import {
+  decodeServerMessage,
   defineClient,
+  type DeltaSnapshot,
   type Direction,
+  type FullSnapshot,
   type Intent,
   type ItemDef,
   type RecipesMessage,
-  type Snapshot,
+  type WelcomeMessage,
 } from '@game/shared';
 import { registerEmoji } from './emoji-atlas.ts';
 import { createGame, type Game } from './game.ts';
@@ -17,12 +20,6 @@ import { INVENTORY_TOGGLE_EVENT } from './ui/InventoryPanel.tsx';
 const WS_URL = (import.meta.env?.VITE_WS_URL as string | undefined) ?? 'ws://localhost:3000';
 const RECONNECT_DELAY_MS = 1000;
 const PING_INTERVAL_MS = 2000;
-
-interface Welcome {
-  t: 'welcome';
-  entityId: number;
-  color: string;
-}
 
 interface Pong {
   t: 'pong';
@@ -40,18 +37,35 @@ const KEY_TO_DIR: Record<string, Direction> = {
   a: 'w',
 };
 
-function isSnapshot(value: unknown): value is Snapshot {
+function isFullSnapshot(value: unknown): value is FullSnapshot {
   if (typeof value !== 'object' || value === null) return false;
   const msg = value as Record<string, unknown>;
   return (
-    msg.t === 'snapshot' &&
+    msg.t === 'full' &&
     typeof msg.tick === 'number' &&
     Array.isArray(msg.entities) &&
-    Array.isArray(msg.tiles)
+    Array.isArray(msg.tiles) &&
+    typeof msg.playerX === 'number' &&
+    typeof msg.playerY === 'number'
   );
 }
 
-function isWelcome(value: unknown): value is Welcome {
+function isDeltaSnapshot(value: unknown): value is DeltaSnapshot {
+  if (typeof value !== 'object' || value === null) return false;
+  const msg = value as Record<string, unknown>;
+  return (
+    msg.t === 'delta' &&
+    typeof msg.tick === 'number' &&
+    Array.isArray(msg.entities) &&
+    Array.isArray(msg.removedEntities) &&
+    Array.isArray(msg.tiles) &&
+    Array.isArray(msg.removedTiles) &&
+    typeof msg.playerX === 'number' &&
+    typeof msg.playerY === 'number'
+  );
+}
+
+function isWelcome(value: unknown): value is WelcomeMessage {
   if (typeof value !== 'object' || value === null) return false;
   const msg = value as Record<string, unknown>;
   return msg.t === 'welcome' && typeof msg.entityId === 'number' && typeof msg.color === 'string';
@@ -67,6 +81,13 @@ function isRecipesMessage(value: unknown): value is RecipesMessage {
   if (typeof value !== 'object' || value === null) return false;
   const msg = value as Record<string, unknown>;
   return msg.t === 'recipes' && Array.isArray(msg.recipes);
+}
+
+/** Feature systems the server guard auto-disabled, or [] when none. */
+function readDisabledFeatures(msg: { disabledFeatures?: unknown }): string[] {
+  return Array.isArray(msg.disabledFeatures)
+    ? msg.disabledFeatures.filter((name): name is string => typeof name === 'string')
+    : [];
 }
 
 /** True when the event originated inside the UI overlay — panels own those keys/clicks. */
@@ -135,20 +156,45 @@ async function main(): Promise<void> {
     }
   }
 
+  // Phase 7: clicking an entity attacks it (the server validates stats and
+  // adjacency). Right-click or a keybind can come later.
+  game.setAttackHandler((entityId) => {
+    sendIntent({ t: 'intent', kind: 'attack', targetId: entityId });
+  });
+
   function connect(): void {
     game.state.connected = false;
-    socket = new WebSocket(WS_URL);
+    const ws = new WebSocket(WS_URL);
+    socket = ws;
+    // Binary frames arrive as ArrayBuffers, not Blobs, so the handler below
+    // can decode them directly.
+    ws.binaryType = 'arraybuffer';
 
-    socket.addEventListener('open', () => {
+    ws.addEventListener('open', () => {
       game.state.connected = true;
+      // Ask for the compact binary wire format. The server answers in
+      // binary once it sees this; if it is old and ignores it, the handler
+      // below just keeps parsing JSON — the fallback is seamless.
+      ws.send(JSON.stringify({ t: 'binary', enabled: true }));
     });
 
-    socket.addEventListener('message', (event) => {
+    ws.addEventListener('message', (event) => {
       let message: unknown;
-      try {
-        message = JSON.parse(String(event.data));
-      } catch {
-        return; // malformed frame; ignore
+      if (event.data instanceof ArrayBuffer) {
+        // Binary frames: snapshots and pongs, decoded with the shared codec.
+        try {
+          message = decodeServerMessage(new Uint8Array(event.data));
+        } catch {
+          return; // malformed binary frame; ignore
+        }
+      } else {
+        // Text frames: the welcome, the recipe registry, and anything from
+        // a server that never switched us to binary.
+        try {
+          message = JSON.parse(String(event.data));
+        } catch {
+          return; // malformed frame; ignore
+        }
       }
       if (typeof message !== 'object' || message === null) return;
 
@@ -160,15 +206,16 @@ async function main(): Promise<void> {
         registerRecipes(msg.recipes);
       } else if (isPong(msg)) {
         game.state.pingMs = ~~(performance.now() - msg.ts);
-      } else if (isSnapshot(msg)) {
+      } else if (isFullSnapshot(msg)) {
         game.pushSnapshot(msg);
-        game.state.disabledFeatures = Array.isArray(msg.disabledFeatures)
-          ? msg.disabledFeatures.filter((name): name is string => typeof name === 'string')
-          : [];
+        game.state.disabledFeatures = readDisabledFeatures(msg);
+      } else if (isDeltaSnapshot(msg)) {
+        game.pushSnapshot(msg);
+        game.state.disabledFeatures = readDisabledFeatures(msg);
       }
     });
 
-    socket.addEventListener('close', () => {
+    ws.addEventListener('close', () => {
       game.state.connected = false;
       game.setLocalEntity(null);
       setTimeout(connect, RECONNECT_DELAY_MS);

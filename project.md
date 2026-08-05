@@ -116,7 +116,7 @@ tnmtmmorpg/
 - Tile map: hardcoded chunk of grass/wall, collision check on move
 - WebSocket server, session per connection, player entity on connect
 - Intent: `{ t:'intent', kind:'move', dir:'n'|'s'|'e'|'w' }`
-- Server sends full `snapshot` every tick (no deltas yet)
+- Server sends a full `snapshot` on connect and per-session `delta` snapshots every tick (tiles only when they change; entities wholesale)
 - Throwaway client: plain canvas, colored rects, arrow keys
 
 **Validation**

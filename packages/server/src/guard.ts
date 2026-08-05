@@ -5,6 +5,8 @@ export interface GuardOptions {
   maxStrikes?: number;
   /** Called the moment a system is auto-disabled. */
   onDisabled?: (feature: string, name: string, reason: string) => void;
+  /** Profiling hook: wall-clock ms of each system run, success or failure. */
+  onRun?: (name: string, ms: number) => void;
 }
 
 interface GuardState {
@@ -80,10 +82,12 @@ export function createGuard(options: GuardOptions = {}) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[guard] feature '${feature}' system '${name}' threw: ${message}`);
         strike(name, feature, `threw: ${message}`);
+        options.onRun?.(name, performance.now() - start);
         return false;
       }
 
       const elapsedMs = performance.now() - start;
+      options.onRun?.(name, elapsedMs);
       if (elapsedMs > budgetMs) {
         console.error(
           `[guard] feature '${feature}' system '${name}' exceeded time budget: ` +

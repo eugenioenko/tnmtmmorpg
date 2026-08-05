@@ -1,27 +1,13 @@
-import { Application, Container, Graphics, Sprite, Text } from 'pixi.js';
-import type { CraftingComponent, EntityState, ItemDropComponent, Snapshot } from '@game/shared';
-import { emojiForItem, emojiForKind, emojiTexture } from './emoji-atlas.ts';
-import { getItemDef } from './items.ts';
+import { Application, Container, Graphics } from 'pixi.js';
+import type { DeltaSnapshot, EntityState, FullSnapshot, TileState } from '@game/shared';
+import { Camera } from './camera.ts';
+import { EntityRenderer } from './renderer/entities.ts';
+import { TilemapRenderer } from './renderer/tilemap.ts';
 
-export const TILE_SIZE = 32;
+export { TILE_SIZE } from './renderer/tilemap.ts';
 
 /** How long a snapshot pair takes to complete its lerp; mirrors the server tick. */
 const TICK_MS = 100;
-
-/** How long a despawned entity stays frozen on screen before vanishing. */
-const FROZEN_MS = 3000;
-
-const TILE_COLORS: Record<string, number> = {
-  grass: 0x3d7a3d,
-  wall: 0x4a4a4a,
-};
-
-/** Fallback palette when an entity has no player component with a color. */
-const FALLBACK_COLORS = ['#c0392b', '#2980b9', '#27ae60', '#f39c12', '#8e44ad', '#16a085'];
-
-const RECT_PAD = 3; // px inset so adjacent entities stay visually distinct
-const EMOJI_SIZE = 22; // smaller than the rect so the color shows around the glyph
-const ITEM_EMOJI_SIZE = 15; // ground items render smaller: they are things, not actors
 
 /** Live numbers the UI overlay polls. */
 export interface GameState {
@@ -34,72 +20,28 @@ export interface GameState {
   disabledFeatures: string[];
 }
 
-export interface Game {
-  /** Mutable live state; UI panels read it on a timer. */
-  readonly state: GameState;
-  /** Feed the latest authoritative snapshot from the server. */
-  pushSnapshot(snapshot: Snapshot): void;
-  /** Mark the entity id that belongs to this browser tab. */
-  setLocalEntity(id: number | null): void;
-  /** The local player's entity from the newest snapshot, or undefined. */
-  localPlayer(): EntityState | undefined;
-  /** The newest authoritative snapshot, or undefined before the first arrives. */
-  latestSnapshot(): Snapshot | undefined;
-  /** Tear down the Pixi app, ticker and all listeners. */
-  destroy(): void;
+/**
+ * The client's accumulated view of the world. `full` messages replace it,
+ * `delta` messages patch it; the renderer and the interpolation buffer only
+ * ever read materialized copies of this.
+ */
+export interface WorldState {
+  tick: number;
+  entities: EntityState[];
+  /** Sparse: only non-grass tiles the server told us about. Anything else is grass. */
+  tiles: TileState[];
+  playerX: number;
+  playerY: number;
 }
 
 interface BufferedSnapshot {
-  snapshot: Snapshot;
+  snapshot: WorldState;
   /** performance.now() when the frame arrived; anchors the lerp clock. */
   receivedAt: number;
 }
 
-interface RenderEntity {
-  id: number;
-  kind: string;
-  /** Integer color for the backing rect, derived from components. */
-  color: number;
-  container: Container;
-  /** null for ground items, which render without a backing rect. */
-  rect: Graphics | null;
-  emoji: Sprite;
-  /** Stack-count label, only on ground item entities. */
-  countLabel: Text | null;
-  /** Phase 6: progress bars drawn above stations with active crafting jobs. */
-  craftBar: Graphics;
-  /** When the entity left the newest snapshot, or null while it is live. */
-  frozenAt: number | null;
-}
-
-function isItemDrop(value: unknown): value is ItemDropComponent {
-  if (typeof value !== 'object' || value === null) return false;
-  const drop = value as Record<string, unknown>;
-  return typeof drop.itemId === 'string' && typeof drop.count === 'number';
-}
-
-function isCrafting(value: unknown): value is CraftingComponent {
-  if (typeof value !== 'object' || value === null) return false;
-  const crafting = value as Record<string, unknown>;
-  return Array.isArray(crafting.activeJobs) && Array.isArray(crafting.queue);
-}
-
-function entityColor(entity: EntityState): string {
-  if (entity.kind === 'container') return '#8b5a2b'; // chests are brown, always
-  const player = entity.components.player;
-  if (typeof player === 'object' && player !== null) {
-    const color = (player as Record<string, unknown>).color;
-    if (typeof color === 'string') return color;
-  }
-  return FALLBACK_COLORS[entity.id % FALLBACK_COLORS.length];
-}
-
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;
-}
-
-function colorToInt(hex: string): number {
-  return parseInt(hex.slice(1), 16);
 }
 
 /**
@@ -109,225 +51,110 @@ function colorToInt(hex: string): number {
  * The server remains the sole source of truth — this is visual smoothing
  * only, with no prediction or rollback.
  *
- * Entity rendering (Phase 5):
- * - ground items (kind 'item') render as a small emoji with a count label;
- * - containers render with the chest glyph and a brown backing rect;
- * - everything else keeps the colored rect + glyph treatment.
+ * The Game orchestrates three subsystems:
+ * - TilemapRenderer draws the sparse known-tiles model over a grass base;
+ * - EntityRenderer owns the entity sprites, health/craft bars and the
+ *   click-to-attack hit areas;
+ * - Camera keeps the local player centred, converting between world and
+ *   screen coordinates.
  */
-export async function createGame(): Promise<Game> {
-  const canvas = document.getElementById('game-canvas');
-  if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('createGame: #game-canvas element not found');
-  }
+export class Game {
+  /** Mutable live state; UI panels read it on a timer. */
+  readonly state: GameState;
+  /** Snapshot interpolation buffer: the newest two materialized world states. */
+  private readonly buffer: BufferedSnapshot[] = [];
+  // The accumulated world model: full snapshots replace it, deltas patch it,
+  // and every message materializes a copy into the interpolation buffer.
+  private readonly knownTiles = new Map<string, string>(); // "x,y" → kind
+  private readonly modelEntities = new Map<number, EntityState>();
+  private localEntityId: number | null = null;
+  private readonly renderer: EntityRenderer;
+  private readonly tilemap: TilemapRenderer;
+  private readonly camera: Camera;
+  private frameCount = 0;
+  private fpsWindowMs = 0;
+  private readonly app: Application;
+  private readonly worldLayer: Container;
 
-  const app = new Application();
-  await app.init({
-    canvas,
-    background: 0x0d0d0d,
-    resizeTo: window,
-    autoDensity: true,
-    resolution: window.devicePixelRatio || 1,
-    powerPreference: 'high-performance',
-  });
-  app.ticker.maxFPS = 60;
-
-  const worldLayer = new Container();
-  const tileLayer = new Graphics();
-  const entityLayer = new Container();
-  worldLayer.addChild(tileLayer, entityLayer);
-  app.stage.addChild(worldLayer);
-
-  const state: GameState = {
-    tick: 0,
-    entityCount: 0,
-    pingMs: 0,
-    fps: 0,
-    connected: false,
-    disabledFeatures: [],
-  };
-  const buffer: BufferedSnapshot[] = [];
-  const entities = new Map<number, RenderEntity>();
-  let localEntityId: number | null = null;
-  let worldW = 0; // world size in px, derived from the tilemap
-  let worldH = 0;
-  let tilesKey = '';
-  let frameCount = 0;
-  let fpsWindowMs = 0;
-
-  /** Paint an entity's colored rect, with a white outline for the local player. */
-  function paintRect(render: RenderEntity, isLocal: boolean): void {
-    if (!render.rect) return; // ground items have no rect
-    render.rect.clear();
-    const size = TILE_SIZE - RECT_PAD * 2;
-    render.rect.rect(RECT_PAD, RECT_PAD, size, size).fill(render.color);
-    if (isLocal) {
-      render.rect.stroke({ width: 2, color: 0xffffff });
-    }
-  }
-
-  /**
-   * One container per entity holding its rect and emoji together, so the
-   * whole sprite keeps a single z-order: a player standing on an occupied
-   * tile covers the entity underneath, like the old 2D canvas renderer.
-   */
-  function createRenderEntity(entity: EntityState): RenderEntity {
-    const container = new Container();
-    const isGroundItem = entity.kind === 'item' && isItemDrop(entity.components.itemDrop);
-
-    let rect: Graphics | null = null;
-    let countLabel: Text | null = null;
-    let emoji: Sprite;
-
-    if (isGroundItem) {
-      const drop = entity.components.itemDrop as ItemDropComponent;
-      emoji = new Sprite(emojiTexture(emojiForItem(drop.itemId, getItemDef(drop.itemId)?.tags)));
-      emoji.anchor.set(0.5, 0.5);
-      emoji.width = ITEM_EMOJI_SIZE;
-      emoji.height = ITEM_EMOJI_SIZE;
-      emoji.position.set(TILE_SIZE / 2, TILE_SIZE / 2);
-      container.addChild(emoji);
-
-      // Always create the label so later count changes (a partial pickup or
-      // a merge from another drop) can update it; hidden while count <= 1.
-      countLabel = new Text({
-        text: drop.count > 1 ? String(drop.count) : '',
-        style: {
-          fontSize: 10,
-          fill: 0xffffff,
-          fontFamily: 'ui-monospace, monospace',
-          fontWeight: 'bold',
-        },
-      });
-      countLabel.anchor.set(0.5, 1);
-      countLabel.position.set(TILE_SIZE / 2, TILE_SIZE - 1);
-      container.addChild(countLabel);
-    } else {
-      rect = new Graphics();
-      emoji = new Sprite(emojiTexture(emojiForKind(entity.kind)));
-      emoji.anchor.set(0.5, 0.5);
-      emoji.width = EMOJI_SIZE;
-      emoji.height = EMOJI_SIZE;
-      emoji.position.set(TILE_SIZE / 2, TILE_SIZE / 2);
-      container.addChild(rect, emoji);
-    }
-
-    // Phase 6: one graphics layer for craft progress bars, drawn above the
-    // rect and glyph; invisible until the entity has active crafting jobs.
-    const craftBar = new Graphics();
-    craftBar.visible = false;
-    container.addChild(craftBar);
-
-    const render: RenderEntity = {
-      id: entity.id,
-      kind: entity.kind,
-      color: colorToInt(entityColor(entity)),
-      container,
-      rect,
-      emoji,
-      countLabel,
-      craftBar,
-      frozenAt: null,
+  private constructor(
+    app: Application,
+    worldLayer: Container,
+    tileLayer: Graphics,
+    entityLayer: Container,
+  ) {
+    this.app = app;
+    this.worldLayer = worldLayer;
+    this.tilemap = new TilemapRenderer(tileLayer);
+    this.renderer = new EntityRenderer(entityLayer);
+    this.camera = new Camera();
+    this.state = {
+      tick: 0,
+      entityCount: 0,
+      pingMs: 0,
+      fps: 0,
+      connected: false,
+      disabledFeatures: [],
     };
-    paintRect(render, entity.id === localEntityId);
-    container.position.set(entity.x * TILE_SIZE, entity.y * TILE_SIZE);
-    entityLayer.addChild(container);
-    return render;
   }
 
-  /**
-   * Phase 6: redraw the progress bar above every station with active crafting
-   * jobs — one bar per job, stacked from the top of the tile, green when the
-   * local player owns the job, blue otherwise. Read fresh from the newest
-   * snapshot every frame, so progress ticks are visible in both clients.
-   */
-  function updateCraftBars(snapshot: Snapshot): void {
-    for (const entity of snapshot.entities) {
-      const render = entities.get(entity.id);
-      if (!render) continue;
-      const crafting = entity.components.crafting;
-      if (!isCrafting(crafting) || crafting.activeJobs.length === 0) {
-        render.craftBar.visible = false;
-        continue;
-      }
-      render.craftBar.visible = true;
-      render.craftBar.clear();
-      crafting.activeJobs.forEach((job, index) => {
-        const y = 2 + index * 5;
-        const width = TILE_SIZE - 4;
-        render.craftBar.rect(2, y, width, 3).fill(0x161616); // track
-        // No Math.* (banned by lint): manual clamp + ~~(x + 0.5) rounding.
-        const raw = job.progress / job.totalTicks;
-        const frac = raw < 0 ? 0 : raw > 1 ? 1 : raw;
-        const fillWidth = frac <= 0 ? 0 : ~~(width * frac + 0.5) < 2 ? 2 : ~~(width * frac + 0.5);
-        render.craftBar
-          .rect(2, y, fillWidth, 3)
-          .fill(job.crafterEntityId === localEntityId ? 0x7ee787 : 0x61afef);
-      });
+  /** Boot the Pixi app, wire the layers and start the 60fps render ticker. */
+  static async create(): Promise<Game> {
+    const canvas = document.getElementById('game-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      throw new Error('createGame: #game-canvas element not found');
     }
+
+    const app = new Application();
+    await app.init({
+      canvas,
+      background: 0x0d0d0d,
+      resizeTo: window,
+      autoDensity: true,
+      resolution: window.devicePixelRatio || 1,
+      powerPreference: 'high-performance',
+    });
+    app.ticker.maxFPS = 60;
+
+    const worldLayer = new Container();
+    const tileLayer = new Graphics();
+    const entityLayer = new Container();
+    worldLayer.addChild(tileLayer, entityLayer);
+    app.stage.addChild(worldLayer);
+
+    const game = new Game(app, worldLayer, tileLayer, entityLayer);
+    app.ticker.add(() => game.update());
+    return game;
   }
 
-  /** Redraw the tilemap only when its contents actually changed. */
-  function rebuildTiles(snapshot: Snapshot): void {
-    const key = snapshot.tiles.map((t) => `${t.x},${t.y}:${t.kind}`).join('|');
-    if (key === tilesKey) return;
-    tilesKey = key;
-    tileLayer.clear();
-
-    let maxX = 0;
-    let maxY = 0;
-    for (const tile of snapshot.tiles) {
-      const base = TILE_COLORS[tile.kind] ?? 0x3d7a3d;
-      // A subtle checkerboard so open grass reads as a map, not a void.
-      const shade = (tile.x + tile.y) % 2 === 0 ? 0 : -0x0a0a0a;
-      tileLayer
-        .rect(tile.x * TILE_SIZE, tile.y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-        .fill(base + shade);
-      if (tile.x > maxX) maxX = tile.x;
-      if (tile.y > maxY) maxY = tile.y;
-    }
-    worldW = (maxX + 1) * TILE_SIZE;
-    worldH = (maxY + 1) * TILE_SIZE;
-  }
-
-  /** Keep the local player centred; clamp so the world edges stay visible. */
-  function updateCamera(): void {
-    const viewW = app.renderer.width / app.renderer.resolution;
-    const viewH = app.renderer.height / app.renderer.resolution;
-
-    const local = localEntityId !== null ? entities.get(localEntityId) : undefined;
-    let cx: number;
-    let cy: number;
-    if (local) {
-      cx = local.container.position.x + TILE_SIZE / 2 - viewW / 2;
-      cy = local.container.position.y + TILE_SIZE / 2 - viewH / 2;
-    } else {
-      cx = worldW / 2 - viewW / 2;
-      cy = worldH / 2 - viewH / 2;
-    }
-    if (viewW >= worldW) cx = (worldW - viewW) / 2;
-    else cx = clamp(cx, 0, worldW - viewW);
-    if (viewH >= worldH) cy = (worldH - viewH) / 2;
-    else cy = clamp(cy, 0, worldH - viewH);
-    worldLayer.position.set(-cx, -cy);
-  }
-
-  function update(): void {
+  private update(): void {
     // FPS accounting (rolled every second).
-    fpsWindowMs += app.ticker.deltaMS;
-    frameCount++;
-    if (fpsWindowMs >= 1000) {
-      state.fps = ~~((frameCount * 1000) / fpsWindowMs);
-      fpsWindowMs = 0;
-      frameCount = 0;
+    this.fpsWindowMs += this.app.ticker.deltaMS;
+    this.frameCount++;
+    if (this.fpsWindowMs >= 1000) {
+      this.state.fps = ~~((this.frameCount * 1000) / this.fpsWindowMs);
+      this.fpsWindowMs = 0;
+      this.frameCount = 0;
     }
 
-    const latest = buffer[buffer.length - 1];
+    const latest = this.buffer[this.buffer.length - 1];
     if (!latest) return;
-    rebuildTiles(latest.snapshot);
+
+    // The tile base follows the camera centre from the previous frame's
+    // entity positions (rebuild runs before positions update below).
+    const viewW = this.app.renderer.width / this.app.renderer.resolution;
+    const viewH = this.app.renderer.height / this.app.renderer.resolution;
+    const centre = this.renderer.tileCenter(this.localEntityId);
+    this.tilemap.rebuild(
+      this.knownTiles,
+      centre ? centre.x : 0,
+      centre ? centre.y : 0,
+      viewW,
+      viewH,
+    );
 
     // Render ~1 tick behind: when the newest snapshot arrives we are at the
     // previous one (alpha 0) and ease toward it over the next tick interval.
-    const older = buffer.length >= 2 ? buffer[buffer.length - 2] : undefined;
+    const older = this.buffer.length >= 2 ? this.buffer[this.buffer.length - 2] : undefined;
     const alpha = older ? clamp((performance.now() - latest.receivedAt) / TICK_MS, 0, 1) : 1;
 
     // Desired render positions: entities in both snapshots lerp; entities in
@@ -353,93 +180,98 @@ export async function createGame(): Promise<Game> {
       });
     }
 
-    // Existing render entities: move to their lerped spot, or start freezing
-    // when they vanished from the newest snapshot.
-    const now = performance.now();
-    for (const render of entities.values()) {
-      const target = positions.get(render.id);
-      if (target) {
-        render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
-        render.frozenAt = null;
-      } else if (render.frozenAt === null) {
-        render.frozenAt = now; // despawned (or disconnected): freeze in place
-      }
-    }
-
-    // Fresh entities from the newest snapshot.
-    for (const [id, target] of positions) {
-      if (!entities.has(id)) {
-        const entity = byId.get(id);
-        if (!entity) continue;
-        const render = createRenderEntity(entity);
-        render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
-        entities.set(id, render);
-      }
-    }
-
-    // Clean up long-frozen ghosts. Textures default to NOT being destroyed,
-    // which is what we want: the atlas textures are shared by every entity.
-    for (const [id, render] of entities) {
-      if (render.frozenAt !== null && now - render.frozenAt > FROZEN_MS) {
-        render.container.destroy({ children: true });
-        entities.delete(id);
-      }
-    }
+    this.renderer.updatePositions(positions, byId, performance.now());
 
     // Crafting progress bars sit on top of the entities they describe.
-    updateCraftBars(latest.snapshot);
+    this.renderer.updateCraftBars(latest.snapshot);
 
-    updateCamera();
+    // Phase 7: health bars above damaged entities.
+    this.renderer.updateHealthBars(latest.snapshot);
+
+    // Keep the local player centred; the camera follows the just-updated
+    // entity positions and the whole world layer gets the offset applied.
+    this.camera.setViewport(viewW, viewH);
+    this.camera.follow(this.renderer.tileCenter(this.localEntityId));
+    this.camera.update();
+    this.worldLayer.position.set(-this.camera.x, -this.camera.y);
   }
 
-  app.ticker.add(update);
+  /** Feed the latest authoritative snapshot (full or delta) from the server. */
+  pushSnapshot(msg: FullSnapshot | DeltaSnapshot): void {
+    if (msg.t === 'full') {
+      // Full snapshot: the client's accumulated state is replaced wholesale.
+      this.knownTiles.clear();
+      for (const tile of msg.tiles) this.knownTiles.set(`${tile.x},${tile.y}`, tile.kind);
+      this.modelEntities.clear();
+      for (const entity of msg.entities) this.modelEntities.set(entity.id, entity);
+    } else {
+      // Delta: patch the accumulated state on top of what we already have.
+      for (const id of msg.removedEntities) this.modelEntities.delete(id);
+      for (const entity of msg.entities) this.modelEntities.set(entity.id, entity);
+      for (const tile of msg.tiles) this.knownTiles.set(`${tile.x},${tile.y}`, tile.kind);
+      for (const tile of msg.removedTiles) this.knownTiles.delete(`${tile.x},${tile.y}`);
+    }
 
-  return {
-    get state(): GameState {
-      return state;
-    },
+    // Materialize the accumulated model so the interpolation buffer always
+    // holds complete world states, exactly as it did with full snapshots.
+    const worldState: WorldState = {
+      tick: msg.tick,
+      entities: [...this.modelEntities.values()],
+      tiles: [...this.knownTiles].map(([key, kind]) => {
+        const comma = key.indexOf(',');
+        return { x: Number(key.slice(0, comma)), y: Number(key.slice(comma + 1)), kind };
+      }),
+      playerX: msg.playerX,
+      playerY: msg.playerY,
+    };
+    this.buffer.push({ snapshot: worldState, receivedAt: performance.now() });
+    if (this.buffer.length > 2) this.buffer.shift();
+    this.state.tick = worldState.tick;
+    this.state.entityCount = worldState.entities.length;
 
-    pushSnapshot(snapshot: Snapshot): void {
-      buffer.push({ snapshot, receivedAt: performance.now() });
-      if (buffer.length > 2) buffer.shift();
-      state.tick = snapshot.tick;
-      state.entityCount = snapshot.entities.length;
+    // Ground-item stack counts change when someone picks up part of a
+    // stack; refresh the count labels directly from the newest state.
+    this.renderer.refreshCountLabels(worldState.entities);
+  }
 
-      // Ground-item stack counts change when someone picks up part of a
-      // stack; refresh the count labels directly from the newest snapshot.
-      for (const entity of snapshot.entities) {
-        if (entity.kind !== 'item') continue;
-        const drop = entity.components.itemDrop;
-        if (!isItemDrop(drop)) continue;
-        const render = entities.get(entity.id);
-        if (render?.countLabel) {
-          const text = drop.count > 1 ? String(drop.count) : '';
-          if (render.countLabel.text !== text) render.countLabel.text = text;
-        }
-      }
-    },
+  /** Mark the entity id that belongs to this browser tab. */
+  setLocalEntity(id: number | null): void {
+    this.localEntityId = id;
+    this.renderer.setLocalEntity(id); // repaints the white-outline highlight
+  }
 
-    setLocalEntity(id: number | null): void {
-      localEntityId = id;
-      // Repaint the highlight: the old local player loses it, the new one gains it.
-      for (const render of entities.values()) {
-        paintRect(render, render.id === id);
-      }
-    },
+  /**
+   * Phase 7: wire up click-to-attack. The handler receives the id of the
+   * clicked entity (never the local player's own); the caller sends the
+   * 'attack' intent. Pass null to disable.
+   */
+  setAttackHandler(handler: ((entityId: number) => void) | null): void {
+    this.renderer.setAttackHandler(handler);
+  }
 
-    localPlayer(): EntityState | undefined {
-      const latest = buffer[buffer.length - 1];
-      if (!latest || localEntityId === null) return undefined;
-      return latest.snapshot.entities.find((entity) => entity.id === localEntityId);
-    },
+  /** The local player's entity from the newest state, or undefined. */
+  localPlayer(): EntityState | undefined {
+    const latest = this.buffer[this.buffer.length - 1];
+    if (!latest || this.localEntityId === null) return undefined;
+    return latest.snapshot.entities.find((entity) => entity.id === this.localEntityId);
+  }
 
-    latestSnapshot(): Snapshot | undefined {
-      return buffer[buffer.length - 1]?.snapshot;
-    },
+  /**
+   * The accumulated world state from the newest snapshot (fulls replace it,
+   * deltas patch it), or undefined before the first arrives.
+   */
+  latestSnapshot(): WorldState | undefined {
+    return this.buffer[this.buffer.length - 1]?.snapshot;
+  }
 
-    destroy(): void {
-      app.ticker.stop();
-      app.destroy(false, { children: true });
-    },
-  };
+  /** Tear down the Pixi app, ticker and all listeners. */
+  destroy(): void {
+    this.app.ticker.stop();
+    this.app.destroy(false, { children: true });
+  }
+}
+
+/** Boot the game layer: init the Pixi app and return the running Game. */
+export async function createGame(): Promise<Game> {
+  return Game.create();
 }

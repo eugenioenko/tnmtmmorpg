@@ -15,6 +15,7 @@ const TEXTURE_CACHE = new Map<string, Texture>();
 const EMOJI_BY_KIND = new Map<string, string>([
   ['player', '🧙'],
   ['container', '📦'], // Phase 5: chests are a core entity kind
+  ['npc', '🤖'], // core entity kind: wandering NPCs (features may register their own)
 ]);
 
 /** Glyphs for item ids; features can add more via registerItemEmoji. */

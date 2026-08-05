@@ -41,7 +41,8 @@ function toState(entity: {
 /**
  * The sanctioned feature API. Feature code never sees the World class or
  * any other core internal: spawn/get/despawn/query/tile/setTile/give/emit/
- * rng/log is the entire surface, and the only way to change the world.
+ * emitNear/rng/log is the entire surface, and the only way to change the
+ * world.
  *
  * get()/query() return detached copies of components, so features cannot
  * mutate another entity's state in place. Features change state through
@@ -98,6 +99,10 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
 
     emit(event: string, payload: unknown): void {
       bus.emit(event, payload);
+    },
+
+    emitNear(x: number, y: number, radius: number, event: string, payload: unknown): void {
+      bus.emitNear(x, y, radius, event, payload);
     },
 
     rng(): number {

@@ -1,4 +1,12 @@
-import { definePlugin, emptySlots, INVENTORY_CAPACITY, type ItemDef } from '@game/shared';
+import {
+  definePlugin,
+  emptySlots,
+  INVENTORY_CAPACITY,
+  isMovementComponent,
+  isNPCComponent,
+  type Direction,
+  type ItemDef,
+} from '@game/shared';
 
 /**
  * The tutorial feature — a copy-me skeleton. Everything registered here is
@@ -11,12 +19,15 @@ import { definePlugin, emptySlots, INVENTORY_CAPACITY, type ItemDef } from '@gam
  *                           polished_stone (Phase 6, crafted outputs)
  * - two recipes:            '_example:glowing_essence' and
  *                           '_example:polished_stone', both at the workbench
+ * - one AI:                 '_example:wander' (NPC behavior; 'wander' is
+ *                           the core built-in, this shows the AIDef contract)
  * - commands:               '_example:greet', '_example:give' (hand items to
  *                           the sender), '_example:chest' (spawn a test
  *                           container next to the sender), '_example:items'
  *                           (query the item registry by tag),
  *                           '_example:station' (spawn a test workbench next
- *                           to the sender)
+ *                           to the sender), '_example:spawn-npc' (spawn a
+ *                           wandering NPC, optionally at given coordinates)
  */
 
 /** The tutorial items — everything a feature needs to register items. */
@@ -58,12 +69,39 @@ export default definePlugin({
   entityKinds: ['_example:totem', '_example:workbench'],
   systems: [
     {
+      // Logs every 50 ticks (5 seconds) so it's visible but not noisy.
       name: '_example:beat',
-      fn: (world) => {
-        world.log('beat');
+      fn: (() => {
+        let ticks = 0;
+        return (world: { log: (msg: string) => void }) => {
+          if (++ticks % 50 === 0) world.log(`beat (tick ${ticks})`);
+        };
+      })(),
+    },
+  ],
+
+  ais: [
+    {
+      // Demo AI: the AIDef contract in miniature. The core NPC system runs
+      // this (guarded) once per tick while the NPC is awake and applies
+      // movement afterwards — an AI only decides state and a direction, it
+      // never moves the NPC itself. `entity` is the LIVE NPC: mutations to
+      // its npc/movement components are real. `nearby` are detached copies.
+      name: '_example:wander',
+      fn: (world, entity) => {
+        const npc = entity.components.npc;
+        const movement = entity.components.movement;
+        if (!isNPCComponent(npc) || !isMovementComponent(movement)) return;
+        // Rest a while, then wander; pick a fresh direction while wandering.
+        if (world.rng() < 0.04) npc.state = npc.state === 'idle' ? 'wandering' : 'idle';
+        if (npc.state === 'wandering') {
+          const dirs: readonly Direction[] = ['n', 's', 'e', 'w'];
+          movement.dir = dirs[~~(world.rng() * dirs.length)];
+        }
       },
     },
   ],
+
   commands: [
     {
       name: '_example:greet',
@@ -142,6 +180,60 @@ export default definePlugin({
           return;
         }
         world.log(`no free tile next to entity ${entityId} - no workbench spawned`);
+      },
+    },
+    {
+      // Test helper: spawn a wandering NPC next to the sender — or, with
+      // { x, y } args, at exact coordinates (handy for verifying spatial
+      // sleeping: spawn one far away and it never wakes, never logs).
+      // { ai: '_example:wander' } picks this feature's AI instead of the
+      // core built-in 'wander'.
+      name: '_example:spawn-npc',
+      fn: (world, args, entityId) => {
+        const payload = (typeof args === 'object' && args !== null ? args : {}) as Record<
+          string,
+          unknown
+        >;
+        const player = world.get(entityId);
+        if (!player) return;
+        const ai = typeof payload.ai === 'string' ? payload.ai : 'wander';
+
+        const offsets = [
+          { x: 1, y: 0 },
+          { x: -1, y: 0 },
+          { x: 0, y: 1 },
+          { x: 0, y: -1 },
+          { x: 0, y: 0 }, // last resort: the sender's own tile
+        ];
+        let x: number | undefined;
+        let y: number | undefined;
+        if (typeof payload.x === 'number' && typeof payload.y === 'number') {
+          x = payload.x;
+          y = payload.y;
+        } else {
+          for (const offset of offsets) {
+            const cx = player.x + offset.x;
+            const cy = player.y + offset.y;
+            if (world.tile(cx, cy) === 'wall') continue;
+            const occupied = world.query().some((e) => e.x === cx && e.y === cy);
+            if (occupied) continue;
+            x = cx;
+            y = cy;
+            break;
+          }
+        }
+        if (x === undefined || y === undefined) {
+          world.log(`no free tile next to entity ${entityId} - no NPC spawned`);
+          return;
+        }
+        world.spawn('npc', { x, y }, {
+          npc: { ai, state: 'idle', lastActionTick: 0, spawnChunk: `${~~(x / 64)},${~~(y / 64)}` },
+          movement: { speed: 0.2, nextMoveTick: 0 },
+          // Phase 7: stats make the NPC attackable (the core spawnNPC carries
+          // the same defaults — this command duplicates the spawn shape).
+          stats: { hp: 30, maxHp: 30, atk: 8, def: 2, level: 1 },
+        });
+        world.log(`spawned NPC (ai '${ai}') at (${x}, ${y})`);
       },
     },
   ],
