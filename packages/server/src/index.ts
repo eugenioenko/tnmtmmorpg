@@ -15,7 +15,7 @@ import { Profiler } from './profiler.ts';
 import { startWsServer } from './ws.ts';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const WORLD_DB = process.env.WORLD_DB ?? '.data/dev.sqlite';
+const WORLD_DB = process.env.WORLD_DB ?? '../../.data/dev.sqlite';
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH ?? DEFAULT_WORLD_WIDTH);
 const WORLD_HEIGHT = Number(process.env.WORLD_HEIGHT ?? DEFAULT_WORLD_HEIGHT);
 const WORLD_SEED = Number(process.env.WORLD_SEED ?? DEFAULT_WORLD_SEED);
