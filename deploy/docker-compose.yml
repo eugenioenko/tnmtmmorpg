@@ -1,0 +1,32 @@
+# Shipped to the VPS by .github/workflows/deploy.yml on every merge to main.
+# Edit it here, not on the server — the deploy overwrites it each time.
+#
+# Values come from the .env the deploy writes alongside this file.
+
+name: tnmtmmorpg
+
+services:
+  server:
+    image: ${IMAGE:-ghcr.io/eugenioenko/tnmtmmorpg:latest}
+    container_name: tnmtmmorpg-server
+    restart: unless-stopped
+    environment:
+      PORT: 3010
+      WORLD_DB: /app/.data/world.sqlite
+      WORLD_SEED: ${WORLD_SEED:-42}
+    volumes:
+      # The world. Losing this resets the map and every player's inventory;
+      # everything else in the container is disposable.
+      - ./data:/app/.data
+    networks:
+      - web
+    # No `ports:` on purpose. Caddy reaches the server over the shared docker
+    # network by container name, so 3010 is never exposed on the public
+    # interface — the only way in is through Caddy on 443.
+
+networks:
+  # The same external network skedoodle uses, so the existing Caddy container
+  # can already resolve `tnmtmmorpg-server`.
+  web:
+    name: ${CADDY_NETWORK:-web}
+    external: true

@@ -1,0 +1,108 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VITE_WS_URL=${{ vars.VITE_WS_URL || 'wss://tnmtmmorpg.yy-dev.top/ws' }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compose file is version-controlled and shipped every deploy, so
+      # the VPS never drifts from the repo.
+      - name: Copy compose file to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: deploy/docker-compose.yml
+          target: ~/tnmtmmorpg
+          strip_components: 1
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ~/tnmtmmorpg
+            mkdir -p data
+
+            cat > .env <<'ENVEOF'
+            CADDY_NETWORK=${{ vars.CADDY_NETWORK || 'web' }}
+            WORLD_SEED=${{ vars.WORLD_SEED || '42' }}
+            ENVEOF
+            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> .env
+
+            # The package inherits the repo's private visibility, so the VPS
+            # has to authenticate. GITHUB_TOKEN is valid for this job's
+            # lifetime, which covers the pull immediately below.
+            echo "${{ secrets.GITHUB_TOKEN }}" \
+              | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+            # Lift the built client out of the image so Caddy can serve it as
+            # plain files. Staged through a temp dir and swapped in, so a
+            # failed extraction never leaves a half-written site on disk.
+            docker rm -f tnmtmmorpg-extract >/dev/null 2>&1 || true
+            docker create --name tnmtmmorpg-extract ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            rm -rf public.new && mkdir -p public.new
+            docker cp tnmtmmorpg-extract:/app/public/. public.new/
+            docker rm tnmtmmorpg-extract
+            rm -rf public.old
+            if [ -d public ]; then mv public public.old; fi
+            mv public.new public
+            rm -rf public.old
+
+            docker compose up -d --force-recreate
+            docker logout ${{ env.REGISTRY }} || true
+            docker image prune -f
+
+            # Fail the deploy loudly if the server did not come back up.
+            sleep 8
+            docker compose ps
+            docker compose logs --tail=30 server
+            docker compose ps --status running --quiet | grep -q . \
+              || { echo "server is not running after deploy"; exit 1; }

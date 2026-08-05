@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.data
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+*.sqlite
+*.sqlite-*
+.env
+deploy
+Dockerfile
+.dockerignore

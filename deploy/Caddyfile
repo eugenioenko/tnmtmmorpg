@@ -1,0 +1,45 @@
+# Add this block to ~/caddy/Caddyfile on the VPS, then reload Caddy.
+#
+# It is NOT deployed automatically — that Caddyfile is shared with firenice,
+# skedoodle, autentico and pocketid, so nothing in this repo touches it.
+#
+# Two things it assumes, both already true for your other sites:
+#
+#   1. the Caddy container is on the `web` network, which is how it reaches
+#      skedoodle-app; tnmtmmorpg-server joins the same one, so the name below
+#      resolves with no networking changes;
+#
+#   2. the container can see /root — `api.autentico.top` already serves
+#      `/root/autentico/docs`, so the same mount covers /root/tnmtmmorpg/public.
+#      If that path is mounted specifically rather than all of /root, add:
+#        - /root/tnmtmmorpg/public:/root/tnmtmmorpg/public:ro
+#
+# TLS is automatic: pocketid.yy-dev.top already proves the apex resolves here,
+# so this subdomain gets a certificate on first request. That makes the site
+# https and the socket wss — which is what VITE_WS_URL is built against.
+
+tnmtmmorpg.yy-dev.top {
+    encode zstd gzip
+
+    # Same shape as the skedoodle block. The path must stay in step with
+    # VITE_WS_URL, which is compiled into the client bundle at image build
+    # time — changing one without the other silently breaks connect.
+    @websocket {
+        path /ws
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websocket tnmtmmorpg-server:3010
+
+    # The client: a Vite SPA of content-hashed assets over one index.html.
+    root * /root/tnmtmmorpg/public
+
+    # Hashed filenames never change contents, so cache them hard. index.html
+    # must not be cached, or a deploy ships assets nobody's browser asks for.
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+    header /index.html Cache-Control "no-cache"
+
+    try_files {path} /index.html
+    file_server
+}
