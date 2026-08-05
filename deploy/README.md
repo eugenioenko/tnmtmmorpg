@@ -16,11 +16,17 @@ bind-mounted at `/app/.data`. Delete it and you get a fresh world.
 | | Where | What it is |
 |---|---|---|
 | Game server | container `tnmtmmorpg-server` | Node 24 running `packages/server/src/index.ts` directly — no build step, WebSocket on 3010 |
-| Client | `~/tnmtmmorpg/public` on the host | Vite build, extracted from the image at deploy time, served by Caddy |
+| Client | container `tnmtmmorpg-static` | `caddy:2-alpine` serving `~/tnmtmmorpg/public`, extracted from the image at deploy time |
 | World state | `~/tnmtmmorpg/data` on the host | SQLite + WAL |
 
-The server port is deliberately **not** published. Caddy reaches it over the
-shared docker network by container name, so the only way in is through 443.
+Neither port is published. The shared Caddy reaches both by container name
+over the `web` network, so the only way in is through 443.
+
+**Why a second container instead of `file_server` on the shared Caddy:** that
+Caddy mounts only its own Caddyfile plus its config/data volumes — it cannot
+read the host filesystem at all. That is why the existing `api.autentico.top`
+block, which points `root` at `/root/autentico/docs`, returns 404. Every site
+that works there is a `reverse_proxy`, so this one is too.
 
 ## One-time setup
 
@@ -53,14 +59,16 @@ Same page, **Variables** tab. All have working defaults:
 mkdir -p ~/tnmtmmorpg/data
 ```
 
-Then add to your **Caddy container** (the one already fronting skedoodle):
+Then paste the block from `deploy/Caddyfile` into `~/caddy/Caddyfile` and
+reload:
 
-- the volume `- /root/tnmtmmorpg/public:/srv/tnmtmmorpg:ro`
-- the site block from `deploy/Caddyfile`
+```bash
+docker exec caddy-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+```
 
-Caddy is already on the `web` network and `tnmtmmorpg-server` joins it too, so
-no networking changes are needed — same arrangement as `skedoodle-app`.
-Reload with `docker exec <caddy> caddy reload --config /etc/caddy/Caddyfile`.
+That is the only change to the shared Caddy — no new volumes, no restart, no
+compose edit. Both containers join the `web` network it is already on, the
+same arrangement as `skedoodle-app`.
 
 That is the whole manual part. Everything after is `git push`.
 

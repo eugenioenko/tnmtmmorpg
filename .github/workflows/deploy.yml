@@ -46,15 +46,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The compose file is version-controlled and shipped every deploy, so
-      # the VPS never drifts from the repo.
-      - name: Copy compose file to VPS
+      # Both configs are version-controlled and shipped every deploy, so the
+      # VPS never drifts from the repo.
+      - name: Copy deploy config to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: deploy/docker-compose.yml
+          source: deploy/docker-compose.yml,deploy/static.Caddyfile
           target: ~/tnmtmmorpg
           strip_components: 1
 
@@ -100,9 +100,19 @@ jobs:
             docker logout ${{ env.REGISTRY }} || true
             docker image prune -f
 
-            # Fail the deploy loudly if the server did not come back up.
+            # Fail the deploy loudly rather than leaving a half-up site.
             sleep 8
             docker compose ps
             docker compose logs --tail=30 server
-            docker compose ps --status running --quiet | grep -q . \
-              || { echo "server is not running after deploy"; exit 1; }
+
+            for svc in server static; do
+              docker compose ps --status running --services | grep -qx "$svc" \
+                || { echo "FAILED: $svc is not running"; docker compose logs --tail=50 "$svc"; exit 1; }
+            done
+
+            # The client is only useful if it is actually being served, and
+            # the socket only if it upgrades. Check both from inside the
+            # network, so a green deploy means the site really answers.
+            docker run --rm --network "${{ vars.CADDY_NETWORK || 'web' }}" curlimages/curl:latest \
+              -fsS -o /dev/null -w 'static: %{http_code}\n' http://tnmtmmorpg-static:80/ \
+              || { echo "FAILED: client not being served"; exit 1; }

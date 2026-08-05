@@ -6,6 +6,7 @@
 name: tnmtmmorpg
 
 services:
+  # The game. WebSocket only; ws.ts answers plain HTTP with a string.
   server:
     image: ${IMAGE:-ghcr.io/eugenioenko/tnmtmmorpg:latest}
     container_name: tnmtmmorpg-server
@@ -20,13 +21,28 @@ services:
       - ./data:/app/.data
     networks:
       - web
-    # No `ports:` on purpose. Caddy reaches the server over the shared docker
-    # network by container name, so 3010 is never exposed on the public
-    # interface — the only way in is through Caddy on 443.
 
+  # The client, lifted out of the image at deploy time into ./public.
+  #
+  # A separate container rather than file_server on the shared Caddy: that
+  # Caddy mounts only its own Caddyfile and data volumes, so it cannot read
+  # /root at all — which is why api.autentico.top's file_server block 404s.
+  # Proxying to a container is the pattern that already works there.
+  static:
+    image: caddy:2-alpine
+    container_name: tnmtmmorpg-static
+    restart: unless-stopped
+    volumes:
+      - ./public:/srv:ro
+      - ./static.Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - web
+
+# No `ports:` on either service. The shared Caddy reaches both by container
+# name over this network, so nothing is exposed on the public interface —
+# the only way in is Caddy on 443.
 networks:
-  # The same external network skedoodle uses, so the existing Caddy container
-  # can already resolve `tnmtmmorpg-server`.
+  # The external network Caddy and skedoodle-app already share.
   web:
     name: ${CADDY_NETWORK:-web}
     external: true
