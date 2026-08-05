@@ -8,7 +8,7 @@ import type { ItemDef, RecipeDef } from './items.ts';
  * incidental one. Features are written against a specific version; core
  * guards or migrates when the number moves.
  */
-export const FEATURE_API_VERSION = 2;
+export const FEATURE_API_VERSION = 1;
 
 // ── Phase 4: feature plugin system ─────────────────────────────────────────
 

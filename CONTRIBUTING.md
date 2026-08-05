@@ -56,7 +56,7 @@ That's the whole feature. Send the intent `{ t: 'intent', kind: 'hello:wave' }` 
 
 ## Feature API version
 
-`@game/shared` exports `FEATURE_API_VERSION` (currently `2` — v2 dropped `plugin.ais`, the core NPC behaviour registry; NPCs are a feature now and behaviours register through its `npc:register-ais` event, see `features/npc/README.md`). Bumping it means the feature API contract changed in a breaking way — a deliberate, announced act, never an incidental one. If you change the shape of `definePlugin`/`defineClient`, the `WorldAPI`, or the wire messages in a way that breaks existing features, bump it and say so in the changelog/issue before merging. Check the version with:
+`@game/shared` exports `FEATURE_API_VERSION` (currently `1`). Bumping it means the feature API contract changed in a breaking way — a deliberate, announced act, never an incidental one. If you change the shape of `definePlugin`/`defineClient`, the `WorldAPI`, or the wire messages in a way that breaks existing features, bump it and say so in the changelog/issue before merging. Check the version with:
 
 ```
 node -e "import('@game/shared').then((m) => console.log(m.FEATURE_API_VERSION))"
