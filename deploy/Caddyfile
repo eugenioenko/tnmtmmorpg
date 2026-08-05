@@ -1,0 +1,30 @@
+# Add this block to ~/caddy/Caddyfile on the VPS, then reload Caddy.
+#
+# It is NOT deployed automatically — that Caddyfile is shared with firenice,
+# skedoodle, autentico and pocketid, so nothing in this repo touches it.
+#
+# Both names resolve over the `web` network, the same way skedoodle-app does.
+# Nothing else about the Caddy container changes: no new volumes, no restart,
+# no compose edit. Only reverse_proxy is used, because that is the pattern
+# that works there — a file_server block would need Caddy to see the host
+# filesystem, which it does not (hence api.autentico.top returning 404).
+#
+# TLS is automatic: tnmtmmorpg.yy-dev.top already resolves to this box, so a
+# certificate is issued on first request. That makes the site https and the
+# socket wss — which is what VITE_WS_URL is built against.
+
+tnmtmmorpg.yy-dev.top {
+    # Same shape as the skedoodle block. The path must stay in step with
+    # VITE_WS_URL, which is compiled into the client bundle at image build
+    # time — changing one without the other silently breaks connect.
+    @websocket {
+        path /ws
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websocket tnmtmmorpg-server:3010
+
+    # Everything else is the client. Compression, cache headers and the SPA
+    # fallback live in that container's own config (deploy/static.Caddyfile).
+    reverse_proxy tnmtmmorpg-static:80
+}

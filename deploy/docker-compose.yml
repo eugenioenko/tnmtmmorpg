@@ -1,0 +1,48 @@
+# Shipped to the VPS by .github/workflows/deploy.yml on every merge to main.
+# Edit it here, not on the server — the deploy overwrites it each time.
+#
+# Values come from the .env the deploy writes alongside this file.
+
+name: tnmtmmorpg
+
+services:
+  # The game. WebSocket only; ws.ts answers plain HTTP with a string.
+  server:
+    image: ${IMAGE:-ghcr.io/eugenioenko/tnmtmmorpg:latest}
+    container_name: tnmtmmorpg-server
+    restart: unless-stopped
+    environment:
+      PORT: 3010
+      WORLD_DB: /app/.data/world.sqlite
+      WORLD_SEED: ${WORLD_SEED:-42}
+    volumes:
+      # The world. Losing this resets the map and every player's inventory;
+      # everything else in the container is disposable.
+      - ./data:/app/.data
+    networks:
+      - web
+
+  # The client, lifted out of the image at deploy time into ./public.
+  #
+  # A separate container rather than file_server on the shared Caddy: that
+  # Caddy mounts only its own Caddyfile and data volumes, so it cannot read
+  # /root at all — which is why api.autentico.top's file_server block 404s.
+  # Proxying to a container is the pattern that already works there.
+  static:
+    image: caddy:2-alpine
+    container_name: tnmtmmorpg-static
+    restart: unless-stopped
+    volumes:
+      - ./public:/srv:ro
+      - ./static.Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - web
+
+# No `ports:` on either service. The shared Caddy reaches both by container
+# name over this network, so nothing is exposed on the public interface —
+# the only way in is Caddy on 443.
+networks:
+  # The external network Caddy and skedoodle-app already share.
+  web:
+    name: ${CADDY_NETWORK:-web}
+    external: true

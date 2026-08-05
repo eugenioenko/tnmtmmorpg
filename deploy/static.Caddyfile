@@ -1,0 +1,25 @@
+# Config for the tnmtmmorpg-static container, NOT for the shared Caddy on the
+# host. Shipped to the VPS by the deploy workflow and mounted read-only.
+#
+# This exists because the shared Caddy container mounts only its own Caddyfile
+# and data volumes — it cannot see /root, so it cannot file_server the client
+# straight off the host. Serving the files from a container on the `web`
+# network instead means the shared Caddy only ever needs to reverse_proxy,
+# which is the one pattern already proven to work there.
+
+:80 {
+	root * /srv
+	encode zstd gzip
+
+	# Vite emits content-hashed filenames, so they can be cached forever.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# index.html must never be cached, or a deploy ships new hashed assets
+	# that no browser ever learns to ask for.
+	header /index.html Cache-Control "no-cache"
+
+	# SPA fallback: unknown paths render the app rather than a 404.
+	try_files {path} /index.html
+	file_server
+}
