@@ -4,25 +4,22 @@
 //   node tools/reset-world.mjs --seed 42 --width 500 --height 500
 //   pnpm world:reset -- --seed 42
 //
-// The world is chunk-based and sparse: only the border-wall chunks and the
-// scatter area near the origin (0..200 tiles) are generated and persisted.
-// Everything else is grass, generated identically on demand from the seed
-// when players explore it. Running the same args twice produces byte-
-// identical database files — reproducible local worlds and replayable bug
-// reports.
+// The world is chunk-based and sparse: every chunk is generated
+// deterministically from the seed by the layered-noise terrain generator
+// (world-chunks.ts) when it is first touched, so an unvisited 10000x10000
+// world costs almost nothing. The reset pins the spawn box (tiles 1..18)
+// to grass — players always spawn inside it, and the noise terrain can put
+// water or mountains anywhere — then flushes so the db starts with exactly
+// that state. Running the same args twice produces byte-identical database
+// files — reproducible local worlds and replayable bug reports.
 
 import { rmSync } from 'node:fs';
 import { openDb } from '../packages/server/src/db.ts';
-import {
-  CHUNK_SHIFT,
-  DEFAULT_WORLD_HEIGHT,
-  DEFAULT_WORLD_WIDTH,
-  World,
-} from '../packages/server/src/world.ts';
+import { DEFAULT_WORLD_HEIGHT, DEFAULT_WORLD_WIDTH, World } from '../packages/server/src/world.ts';
 
-const DEFAULT_SEED = 12345;
+const DEFAULT_SEED = 42;
 const DEFAULT_DB = '.data/dev.sqlite';
-const SCATTER_TILES = 200; // pre-generated area around the origin, in tiles
+const SPAWN_BOX = 18; // tiles 1..18 x 1..18 are forced grass
 
 function parseArgs(argv) {
   const args = {
@@ -72,33 +69,13 @@ for (const suffix of ['', '-wal', '-shm', '-journal']) {
 const db = openDb(dbPath);
 const world = new World(width, height, seed, db);
 
-// Border-wall chunks: every chunk that touches the world edge. The world
-// edge reads as 'wall' regardless, but pinning these chunks means the db
-// mirrors the world border from the start.
-const lastCX = (width - 1) >> CHUNK_SHIFT;
-const lastCY = (height - 1) >> CHUNK_SHIFT;
-for (let cy = 0; cy <= lastCY; cy++) {
-  world.ensureChunk(0, cy);
-  if (lastCX > 0) world.ensureChunk(lastCX, cy);
-}
-for (let cx = 0; cx <= lastCX; cx++) {
-  world.ensureChunk(cx, 0);
-  if (lastCY > 0) world.ensureChunk(cx, lastCY);
-}
-
-// The scatter area near the origin: the spawn zone where the world's wall
-// clusters are pre-generated (players spawn inside it). The rest of the
-// world generates identically on demand when players explore it.
-const scatterCX = (SCATTER_TILES >> CHUNK_SHIFT) < lastCX ? SCATTER_TILES >> CHUNK_SHIFT : lastCX;
-const scatterCY = (SCATTER_TILES >> CHUNK_SHIFT) < lastCY ? SCATTER_TILES >> CHUNK_SHIFT : lastCY;
-for (let cy = 0; cy <= scatterCY; cy++) {
-  for (let cx = 0; cx <= scatterCX; cx++) {
-    world.ensureChunk(cx, cy);
+// Ensure the spawn area is walkable: the noise terrain can place water or
+// mountains near the origin, and players always spawn inside this box.
+for (let y = 1; y <= SPAWN_BOX; y++) {
+  for (let x = 1; x <= SPAWN_BOX; x++) {
+    world.setTile(x, y, 'grass');
   }
 }
-
-// Keep the server's fallback spawn tile walkable no matter what the seed says.
-world.setTile(1, 1, 'grass');
 world.flushDirty(db);
 db.close();
 

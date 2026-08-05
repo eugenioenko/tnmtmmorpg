@@ -10,8 +10,9 @@
  *  - coordinates at the demo world's far edge (9999) and at the uint16 max
  *    (65535) round-trip exactly — the world is 10000x10000, so every
  *    coordinate fits in two bytes
- *  - the tile kind byte table maps grass/wall as the spec says, and kinds
- *    the table does not know survive via the 255 escape
+ *  - the tile kind byte table maps the 8 terrain kinds (grass=0, water=1,
+ *    ... swamp=7) as the spec says, and kinds the table does not know
+ *    survive via the 255 escape
  *  - disabledFeatures (the guard's auto-disabled systems banner) round-trips
  *    in both the present and absent cases
  *  - decodeServerMessage dispatches on the type byte and rejects unknown tags
@@ -77,10 +78,10 @@ function playerEntity(id: number, x: number, y: number): EntityState {
   };
 }
 
-/** A full snapshot with a player at the docs' example coords and 120 wall tiles. */
+/** A full snapshot with a player at the docs' example coords and 120 water tiles. */
 function fullFixture(): FullSnapshot {
   const tiles: TileState[] = [];
-  for (let i = 0; i < 120; i++) tiles.push({ x: 5000 + i, y: 4000, kind: 'wall' });
+  for (let i = 0; i < 120; i++) tiles.push({ x: 5000 + i, y: 4000, kind: 'water' });
   return {
     t: 'full',
     tick: 12345,
@@ -118,7 +119,7 @@ function deltaFixture(): DeltaSnapshot {
     tick: 12346,
     entities: [playerEntity(1, 5124, 8765)],
     removedEntities: [3, 7],
-    tiles: [{ x: 5123, y: 4000, kind: 'wall' }],
+    tiles: [{ x: 5123, y: 4000, kind: 'water' }],
     removedTiles: [
       { x: 5100, y: 4000 },
       { x: 5101, y: 4000 },
@@ -135,7 +136,7 @@ function roundTripTests(): void {
   let decoded = decodeFullSnapshot(encodeFullSnapshot(original), 1);
   assert(
     JSON.stringify(decoded) === JSON.stringify(original),
-    'full snapshot with player/npc/container and 120 wall tiles round-trips losslessly',
+    'full snapshot with player/npc/container and 120 water tiles round-trips losslessly',
   );
 
   console.log('unit: DeltaSnapshot round-trip');
@@ -204,7 +205,7 @@ function roundTripTests(): void {
     tick: 65535,
     entities: [{ id: 65535, kind: 'npc', x: 65535, y: 65535, components: {} }],
     tiles: [
-      { x: 65535, y: 65535, kind: 'wall' },
+      { x: 65535, y: 65535, kind: 'water' },
       { x: 9999, y: 9999, kind: 'grass' },
     ],
     playerX: 65535,
@@ -217,12 +218,19 @@ function roundTripTests(): void {
 
   console.log('unit: tile kind bytes');
   assert(
-    TILE_KIND_BYTE.grass === 0 && TILE_KIND_BYTE.wall === 1,
-    'the byte table maps grass=0 and wall=1 as the spec says',
+    TILE_KIND_BYTE[0] === 'grass' &&
+      TILE_KIND_BYTE[1] === 'water' &&
+      TILE_KIND_BYTE[2] === 'mountain' &&
+      TILE_KIND_BYTE[3] === 'sand' &&
+      TILE_KIND_BYTE[4] === 'forest' &&
+      TILE_KIND_BYTE[5] === 'dirt' &&
+      TILE_KIND_BYTE[6] === 'snow' &&
+      TILE_KIND_BYTE[7] === 'swamp',
+    'the byte table maps the 8 terrain kinds to 0..7 as the spec says',
   );
   assert(
-    TILE_KIND_BY_BYTE[0] === 'grass' && TILE_KIND_BY_BYTE[1] === 'wall',
-    'the inverse table maps 0/1 back to grass/wall',
+    TILE_KIND_BY_BYTE[0] === 'grass' && TILE_KIND_BY_BYTE[1] === 'water',
+    'the inverse table maps 0/1 back to grass/water',
   );
   const lavaTile: FullSnapshot = {
     t: 'full',
@@ -321,7 +329,7 @@ function sizeTests(): void {
       },
     ],
     removedEntities: [3, 7],
-    tiles: [{ x: 5123, y: 4000, kind: 'wall' }],
+    tiles: [{ x: 5123, y: 4000, kind: 'water' }],
     removedTiles: [
       { x: 5100, y: 4000 },
       { x: 5101, y: 4000 },

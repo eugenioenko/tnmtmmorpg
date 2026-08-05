@@ -25,7 +25,7 @@ export interface WorldAPI {
   despawn(id: number): void;
   /** Every entity carrying all of the named components (detached copies). */
   query(...componentNames: string[]): EntityState[];
-  /** Tile kind at (x, y); out-of-bounds reads as 'wall'. */
+  /** Tile kind at (x, y); out-of-bounds reads as 'water'. */
   tile(x: number, y: number): string;
   setTile(x: number, y: number, kind: string): void;
   /** Hand `count` of an item to an entity; returns how many were NOT accepted. */

@@ -1,21 +1,46 @@
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  TILE_BYTE_BY_KIND,
+  TILE_DIRT,
+  TILE_FOREST,
+  TILE_GRASS,
+  TILE_MOUNTAIN,
+  TILE_NAMES,
+  TILE_SAND,
+  TILE_SNOW,
+  TILE_SWAMP,
+  TILE_WATER,
+} from '@game/shared';
 import { saveChunk } from './db.ts';
 
-export type TileKind = 'grass' | 'wall';
+// Re-exported so world.ts's re-export chain keeps working unchanged.
+export {
+  TILE_DIRT,
+  TILE_FOREST,
+  TILE_GRASS,
+  TILE_MOUNTAIN,
+  TILE_NAMES,
+  TILE_SAND,
+  TILE_SNOW,
+  TILE_SWAMP,
+  TILE_WATER,
+} from '@game/shared';
+
+/** The 8 terrain kinds the noise generator can produce. */
+export type TileKind =
+  | 'grass'
+  | 'water'
+  | 'mountain'
+  | 'sand'
+  | 'forest'
+  | 'dirt'
+  | 'snow'
+  | 'swamp';
 
 /** Chunk edge in tiles; each chunk stores CHUNK_SIZE x CHUNK_SIZE tiles. */
 export const CHUNK_SIZE = 64;
 /** log2(CHUNK_SIZE); a chunk coord is a world coord shifted right by this. */
 export const CHUNK_SHIFT = 6;
-
-/** Numeric tile kinds stored in chunk data; indices must match TILE_NAMES. */
-export const TILE_GRASS = 0;
-export const TILE_WALL = 1;
-
-/** Kind name by numeric value; the world default ('grass') is omitted from snapshots. */
-export const TILE_NAMES = ['grass', 'wall'] as const;
-
-const TILE_KINDS: Record<string, number> = { grass: TILE_GRASS, wall: TILE_WALL };
 
 /** The map key of a chunk: 'cx,cy'. */
 export function chunkKey(cx: number, cy: number): string {
@@ -35,13 +60,58 @@ export function worldToChunk(
   };
 }
 
-/** A fresh LCG seeded per chunk, so every chunk's layout is deterministic. */
-function createSeededRng(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 2 ** 32;
+/**
+ * Seeded value noise at arbitrary coordinates.
+ * Returns 0-1. Uses smoothstep interpolation between hashed grid points.
+ * No Math: everything flows through integer hashing, so worlds are
+ * reproducible from a seed.
+ */
+function valueNoise(seed: number, x: number, y: number): number {
+  const x0 = x | 0;
+  const y0 = y | 0;
+  const x1 = x0 + 1;
+  const y1 = y0 + 1;
+
+  // Smoothstep
+  const fx = x - x0;
+  const fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+
+  // Hash grid points (LCG-based, no Math)
+  const hash = (cx: number, cy: number): number => {
+    let h = ((seed + cx * 374761393 + cy * 668265263) | 0) >>> 0;
+    h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+    return h / 4294967296; // 0 to 1
   };
+
+  const n00 = hash(x0, y0);
+  const n10 = hash(x1, y0);
+  const n01 = hash(x0, y1);
+  const n11 = hash(x1, y1);
+
+  // Bilinear interpolation
+  const ix0 = n00 + (n10 - n00) * sx;
+  const ix1 = n01 + (n11 - n01) * sx;
+  return ix0 + (ix1 - ix0) * sy;
+}
+
+/**
+ * Fractal Brownian Motion — multiple noise octaves.
+ */
+function fbm(seed: number, x: number, y: number, octaves: number): number {
+  let value = 0;
+  let amp = 1;
+  let freq = 1;
+  let max = 0;
+  for (let i = 0; i < octaves; i++) {
+    value += valueNoise(seed + i * 7919, x * freq, y * freq) * amp;
+    max += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  return value / max;
 }
 
 /** True when the chunk holds any non-grass tile. */
@@ -53,58 +123,86 @@ function hasNonGrass(data: Uint8Array): boolean {
 }
 
 /**
- * Deterministic per-chunk generation from the world seed: the world border
- * is a wall, plus 2-8 small wall clusters of 1-5 tiles at seeded random
- * positions. Everything else stays 0 (grass). The same seed always
- * produces the same world.
+ * Deterministic per-chunk generation from the world seed. Every tile is
+ * classified from layered noise: elevation (fbm) decides ocean/beach/land/
+ * peaks, latitude plus a temperature noise band decides snow, moisture
+ * decides swamp/forest/scrubland. The world border is ocean. The same seed
+ * always produces the same world; unvisited chunks are generated identically
+ * on demand, so the 10000x10000 world costs memory only where players go.
  */
 export function generateChunk(
   seed: number,
   cx: number,
   cy: number,
-  width: number,
-  height: number,
+  worldWidth: number,
+  worldHeight: number,
 ): Uint8Array {
-  const chunkSeed = seed + cx * 0x9e3779b9 + cy * 0x7f4a7c13;
-  const rng = createSeededRng(chunkSeed);
   const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
-  // World borders are walls: the first and last chunk column/row hold the
-  // tiles on the world edge (positions past the edge are never queried).
-  const lastCX = (width - 1) >> CHUNK_SHIFT;
-  const lastCY = (height - 1) >> CHUNK_SHIFT;
-  if (cx === 0) {
-    for (let ly = 0; ly < CHUNK_SIZE; ly++) data[ly * CHUNK_SIZE] = TILE_WALL;
-  }
-  if (cy === 0) {
-    for (let lx = 0; lx < CHUNK_SIZE; lx++) data[lx] = TILE_WALL;
-  }
-  if (cx === lastCX) {
-    const ex = (width - 1) & (CHUNK_SIZE - 1);
-    for (let ly = 0; ly < CHUNK_SIZE; ly++) data[ly * CHUNK_SIZE + ex] = TILE_WALL;
-  }
-  if (cy === lastCY) {
-    const ey = (height - 1) & (CHUNK_SIZE - 1);
-    for (let lx = 0; lx < CHUNK_SIZE; lx++) data[ey * CHUNK_SIZE + lx] = TILE_WALL;
-  }
+  for (let ly = 0; ly < CHUNK_SIZE; ly++) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      const wx = cx * CHUNK_SIZE + lx;
+      const wy = cy * CHUNK_SIZE + ly;
 
-  // Scatter wall clusters: 2-8 per chunk, 1-5 tiles each, grown by a short
-  // random walk (clipped back into the chunk if it wanders off the edge).
-  const clusters = 2 + ~~(rng() * 7);
-  for (let c = 0; c < clusters; c++) {
-    const size = 1 + ~~(rng() * 5);
-    let lx = ~~(rng() * CHUNK_SIZE);
-    let ly = ~~(rng() * CHUNK_SIZE);
-    for (let t = 0; t < size; t++) {
-      data[ly * CHUNK_SIZE + lx] = TILE_WALL;
-      if (rng() < 0.5) lx += rng() < 0.5 ? -1 : 1;
-      else ly += rng() < 0.5 ? -1 : 1;
-      if (lx < 0) lx = 0;
-      else if (lx >= CHUNK_SIZE) lx = CHUNK_SIZE - 1;
-      if (ly < 0) ly = 0;
-      else if (ly >= CHUNK_SIZE) ly = CHUNK_SIZE - 1;
+      // World border is water (ocean)
+      if (wx === 0 || wy === 0 || wx === worldWidth - 1 || wy === worldHeight - 1) {
+        data[ly * CHUNK_SIZE + lx] = TILE_WATER;
+        continue;
+      }
+
+      const elevation = fbm(seed, wx * 0.03, wy * 0.03, 5);
+      const moisture = fbm(seed + 5000, wx * 0.025, wy * 0.025, 4);
+
+      // Latitude temperature (north=cold, south=hot)
+      const lat = 1 - wy / (worldHeight - 1); // 1 at top, 0 at bottom
+      const tempVar = fbm(seed + 10000, wx * 0.02, wy * 0.02, 2) * 0.25;
+      const temperature = lat * 1.0 + tempVar;
+
+      // Deep water
+      if (elevation < 0.3) {
+        data[ly * CHUNK_SIZE + lx] = TILE_WATER;
+        continue;
+      }
+      // Shallow water → sand (beach)
+      if (elevation < 0.36) {
+        data[ly * CHUNK_SIZE + lx] = TILE_SAND;
+        continue;
+      }
+      // Mountains
+      if (elevation > 0.78) {
+        data[ly * CHUNK_SIZE + lx] = TILE_MOUNTAIN;
+        continue;
+      }
+      // High mountains → snowy peaks
+      if (elevation > 0.7 && temperature > 0.55) {
+        data[ly * CHUNK_SIZE + lx] = TILE_SNOW;
+        continue;
+      }
+      // Cold regions → snow
+      if (temperature > 0.72) {
+        data[ly * CHUNK_SIZE + lx] = TILE_SNOW;
+        continue;
+      }
+      // Wet + low → swamp
+      if (moisture > 0.6 && elevation < 0.48) {
+        data[ly * CHUNK_SIZE + lx] = TILE_SWAMP;
+        continue;
+      }
+      // Wet → forest
+      if (moisture > 0.5) {
+        data[ly * CHUNK_SIZE + lx] = TILE_FOREST;
+        continue;
+      }
+      // Dry → dirt/scrubland
+      if (moisture < 0.3) {
+        data[ly * CHUNK_SIZE + lx] = TILE_DIRT;
+        continue;
+      }
+      // Default
+      data[ly * CHUNK_SIZE + lx] = TILE_GRASS;
     }
   }
+
   return data;
 }
 
@@ -153,12 +251,21 @@ export class ChunkStore {
   tileAt(x: number, y: number): TileKind {
     const { cx, cy, lx, ly } = worldToChunk(x, y);
     const data = this.ensure(cx, cy);
-    return TILE_NAMES[data[ly * CHUNK_SIZE + lx]] ?? 'grass';
+    return (TILE_NAMES[data[ly * CHUNK_SIZE + lx]] ?? 'grass') as TileKind;
+  }
+
+  /**
+   * The raw tile byte at (x, y) without generating the chunk: `undefined`
+   * when the chunk has never been loaded. Callers that must not touch the
+   * world (walkability probes on unvisited areas) fall back to grass.
+   */
+  getChunk(cx: number, cy: number): Uint8Array | undefined {
+    return this.chunks.get(chunkKey(cx, cy));
   }
 
   /** Store a tile kind; unknown kinds are ignored (nothing to store). */
   setTile(x: number, y: number, kind: string): void {
-    const numeric = TILE_KINDS[kind];
+    const numeric = TILE_BYTE_BY_KIND[kind];
     if (numeric === undefined) return; // unknown kind: nothing to store
     const { cx, cy, lx, ly } = worldToChunk(x, y);
     const data = this.ensure(cx, cy);

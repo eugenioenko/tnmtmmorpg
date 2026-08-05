@@ -13,26 +13,8 @@ export interface EntityState {
 export interface TileState {
   x: number;
   y: number;
-  kind: string; // 'grass' | 'wall'
+  kind: string; // one of the 8 terrain kinds from terrain.ts
 }
-
-// ── Binary protocol: tile kind bytes ───────────────────────────────────────
-
-/**
- * Tile kind string -> wire byte for the compact binary snapshot format
- * (binary.ts). Byte 255 is reserved there as an escape for kinds not listed
- * here, so the table can grow without a wire-format change.
- */
-export const TILE_KIND_BYTE: Record<string, number> = {
-  grass: 0,
-  wall: 1,
-};
-
-/** Wire byte -> tile kind string; the inverse of TILE_KIND_BYTE. */
-export const TILE_KIND_BY_BYTE: Record<number, string> = {
-  0: 'grass',
-  1: 'wall',
-};
 
 // ── Phase 7: combat events ─────────────────────────────────────────────────
 

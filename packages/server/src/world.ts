@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { WorldCoord } from '@game/shared';
+import { TILE_GRASS, TILE_WATER, WALKABLE_TILES, type WorldCoord } from '@game/shared';
 import { saveEntity } from './db.ts';
 import type { EntityRow } from './db.ts';
 import {
@@ -202,13 +202,27 @@ export class World {
   }
 
   /**
-   * Tile kind at (x, y). Out of bounds and the world border read as 'wall'.
-   * Unloaded chunks are generated deterministically on first read, so every
-   * in-bounds coordinate has a stable answer.
+   * Tile kind at (x, y). Out of bounds and the world border read as 'water'
+   * (the border is ocean). Unloaded chunks are generated deterministically
+   * on first read, so every in-bounds coordinate has a stable answer.
    */
   tile(x: number, y: number): TileKind {
-    if (!this.inBounds(x, y) || this.isBorder(x, y)) return 'wall';
+    if (!this.inBounds(x, y) || this.isBorder(x, y)) return 'water';
     return this.tiles.tileAt(x, y);
+  }
+
+  /**
+   * The raw tile byte at (x, y) without generating anything: out of bounds
+   * reads as water, unvisited areas read as grass. This is the fast
+   * walkability probe — unlike `tile()` it never generates a chunk, so a
+   * movement check across an unvisited world costs a map lookup.
+   */
+  tileByte(x: number, y: number): number {
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return TILE_WATER;
+    const { cx, cy, lx, ly } = worldToChunk(x, y);
+    const chunk = this.tiles.getChunk(cx, cy);
+    if (!chunk) return TILE_GRASS; // ungenerated = grass
+    return chunk[ly * CHUNK_SIZE + lx];
   }
 
   setTile(x: number, y: number, kind: string): void {
@@ -217,7 +231,7 @@ export class World {
   }
 
   isWalkable(x: number, y: number): boolean {
-    return this.inBounds(x, y) && this.tile(x, y) !== 'wall';
+    return WALKABLE_TILES.has(this.tileByte(x, y));
   }
 
   /**
@@ -286,9 +300,9 @@ export class World {
   }
 
   /**
-   * Deterministic per-chunk generation from the world seed: the world border
-   * is a wall, plus 2-8 small wall clusters of 1-5 tiles at seeded random
-   * positions. Everything else stays 0 (grass). The same seed always
+   * Deterministic per-chunk generation from the world seed: layered noise
+   * (see generateChunk in world-chunks.ts) classifies every tile into one of
+   * the 8 terrain kinds; the world border is ocean. The same seed always
    * produces the same world.
    */
   generateChunk(cx: number, cy: number): Uint8Array {

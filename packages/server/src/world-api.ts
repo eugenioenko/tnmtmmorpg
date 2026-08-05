@@ -74,7 +74,7 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
     },
 
     setTile(x: number, y: number, kind: string): void {
-      // Cast: features may introduce tile kinds beyond core's 'grass'|'wall';
+      // Cast: features may introduce tile kinds beyond the 8 core terrain kinds;
       // unknown kinds render with the client's fallback color.
       world.setTile(x, y, kind as TileKind);
     },

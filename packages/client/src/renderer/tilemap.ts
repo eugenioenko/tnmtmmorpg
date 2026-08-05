@@ -1,21 +1,156 @@
 import { Graphics } from 'pixi.js';
+import { TILE_BYTE_BY_KIND, TILE_COLORS, TILE_GRASS } from '@game/shared';
 
 /** World tile edge in pixels; every sprite and rect is sized against it. */
 export const TILE_SIZE = 32;
 
-const TILE_COLORS: Record<string, number> = {
-  grass: 0x3d7a3d,
-  wall: 0x4a4a4a,
+/** Half a tile; the diagonal edge cuts pivot on the tile edge midpoints. */
+const HALF = TILE_SIZE / 2;
+
+/**
+ * The corner triangle for each mask bit, in tile-local coordinates. When the
+ * majority terrain at a corner differs from the tile's own terrain, the tile
+ * renders as its full square with this triangle repainted in the corner's
+ * terrain color — the diagonal shorelines come from these cuts.
+ *
+ * Bit 0 (1): TL corner   Bit 1 (2): TR corner
+ * Bit 2 (4): BR corner   Bit 3 (8): BL corner
+ */
+const CORNER_TRIANGLES: Record<number, [number, number, number, number, number, number]> = {
+  1: [0, 0, HALF, 0, 0, HALF], // TL: (0,0) - (H,0) - (0,H)
+  2: [TILE_SIZE, 0, TILE_SIZE, HALF, HALF, 0], // TR: (S,0) - (S,H) - (H,0)
+  4: [TILE_SIZE, TILE_SIZE, TILE_SIZE, HALF, HALF, TILE_SIZE], // BR: (S,S) - (S,H) - (H,S)
+  8: [0, TILE_SIZE, HALF, TILE_SIZE, 0, HALF], // BL: (0,S) - (H,S) - (0,H)
 };
+
+const CORNER_BITS = [1, 2, 4, 8] as const;
+
+/**
+ * Compute corner mask for a tile.
+ * Bit 0 (1): TL corner differs
+ * Bit 1 (2): TR corner differs
+ * Bit 2 (4): BR corner differs
+ * Bit 3 (8): BL corner differs
+ *
+ * A corner "differs" if the majority of tiles at that corner
+ * are a different terrain type than this tile.
+ */
+function cornerMask(grid: (x: number, y: number) => number, tx: number, ty: number): number {
+  const center = grid(tx, ty);
+  let mask = 0;
+
+  // TL corner: tiles at (tx,ty), (tx-1,ty), (tx-1,ty-1), (tx,ty-1)
+  {
+    const same =
+      (grid(tx - 1, ty - 1) === center ? 1 : 0) +
+      (grid(tx, ty - 1) === center ? 1 : 0) +
+      (grid(tx - 1, ty) === center ? 1 : 0) +
+      (grid(tx, ty) === center ? 1 : 0);
+    // "same < 2" = a strict majority (3+) of the corner's tiles differ.
+    // A 2v2 tie counts as "same": neither side cuts, so axis-aligned
+    // boundaries stay clean straight lines instead of tearing.
+    if (same < 2) mask |= 1; // minority same → corner is "different"
+  }
+  // TR corner
+  {
+    const same =
+      (grid(tx, ty - 1) === center ? 1 : 0) +
+      (grid(tx + 1, ty - 1) === center ? 1 : 0) +
+      (grid(tx, ty) === center ? 1 : 0) +
+      (grid(tx + 1, ty) === center ? 1 : 0);
+    if (same < 2) mask |= 2;
+  }
+  // BR corner
+  {
+    const same =
+      (grid(tx, ty) === center ? 1 : 0) +
+      (grid(tx + 1, ty) === center ? 1 : 0) +
+      (grid(tx, ty + 1) === center ? 1 : 0) +
+      (grid(tx + 1, ty + 1) === center ? 1 : 0);
+    if (same < 2) mask |= 4;
+  }
+  // BL corner
+  {
+    const same =
+      (grid(tx - 1, ty) === center ? 1 : 0) +
+      (grid(tx, ty) === center ? 1 : 0) +
+      (grid(tx - 1, ty + 1) === center ? 1 : 0) +
+      (grid(tx, ty + 1) === center ? 1 : 0);
+    if (same < 2) mask |= 8;
+  }
+
+  return mask;
+}
+
+/**
+ * The majority terrain at one of the tile's corners, for coloring the cut
+ * triangle. Only called when the mask bit is set, so the majority is a
+ * strict one (3 or 4 of the 4 tiles share it); any differing tile works.
+ */
+function cornerTerrain(
+  grid: (x: number, y: number) => number,
+  tx: number,
+  ty: number,
+  bit: number,
+): number {
+  const center = grid(tx, ty);
+  switch (bit) {
+    case 1:
+      for (const [dx, dy] of [
+        [-1, -1],
+        [0, -1],
+        [-1, 0],
+      ]) {
+        const t = grid(tx + dx, ty + dy);
+        if (t !== center) return t;
+      }
+      break;
+    case 2:
+      for (const [dx, dy] of [
+        [0, -1],
+        [1, -1],
+        [1, 0],
+      ]) {
+        const t = grid(tx + dx, ty + dy);
+        if (t !== center) return t;
+      }
+      break;
+    case 4:
+      for (const [dx, dy] of [
+        [1, 0],
+        [0, 1],
+        [1, 1],
+      ]) {
+        const t = grid(tx + dx, ty + dy);
+        if (t !== center) return t;
+      }
+      break;
+    case 8:
+      for (const [dx, dy] of [
+        [-1, 0],
+        [-1, 1],
+        [0, 1],
+      ]) {
+        const t = grid(tx + dx, ty + dy);
+        if (t !== center) return t;
+      }
+      break;
+  }
+  return center;
+}
 
 /**
  * Renders the tile layer from the local world model's known-tiles map. The
  * map is sparse — only non-grass tiles the server told us about; anything
- * else is grass — so a grass base fills the visible range first and the
- * known tiles overlay it.
+ * else is grass — so the visible range is drawn as grass squares first and
+ * the known tiles' squares and diagonal edge cuts overlay them.
+ *
+ * Every visible tile renders as its full square plus up to one corner-cut
+ * triangle per corner whose majority terrain differs (see cornerMask), which
+ * turns terrain transitions into smooth diagonal shorelines.
  */
 export class TilemapRenderer {
-  // Last-drawn tilemap extent (the grass base follows the camera).
+  // Last-drawn tilemap extent (the base follows the camera).
   private tilesKey = '';
   private minX = 0;
   private maxX = 0;
@@ -40,8 +175,8 @@ export class TilemapRenderer {
     viewW: number,
     viewH: number,
   ): void {
-    // The base must cover the camera view, padded by the snapshot's own
-    // view radius so overlay tiles always land on base grass.
+    // The drawn range must cover the camera view; the +1 halo is so the
+    // corner sampling (which reads one tile out) stays inside drawn ground.
     const halfX = ~~(viewW / (2 * TILE_SIZE)) + 3;
     const halfY = ~~(viewH / (2 * TILE_SIZE)) + 3;
     let minX = ~~(cameraCenterX / TILE_SIZE) - halfX;
@@ -56,7 +191,11 @@ export class TilemapRenderer {
         y: Number(key.slice(comma + 1)),
         kind,
       });
-      const tile = parsed[parsed.length - 1];
+    }
+
+    // Anything the client knows about must be drawn even if the camera
+    // centre math above missed it.
+    for (const tile of parsed) {
       if (tile.x < minX) minX = tile.x;
       if (tile.x > maxX) maxX = tile.x;
       if (tile.y < minY) minY = tile.y;
@@ -80,24 +219,34 @@ export class TilemapRenderer {
     this.maxY = maxY;
     this.layer.clear();
 
-    // Base grass: everything not listed in the snapshot is grass.
+    // Terrain byte for a world tile: the snapshot's kinds win, everything
+    // else (including out-of-view ground) defaults to grass.
+    const grid = (x: number, y: number): number => {
+      const kind = tiles.get(`${x},${y}`);
+      return kind === undefined ? TILE_GRASS : (TILE_BYTE_BY_KIND[kind] ?? TILE_GRASS);
+    };
+
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        // A subtle checkerboard so open grass reads as a map, not a void.
-        const shade = (x + y) & 1 ? -0x0a0a0a : 0;
-        this.layer
-          .rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-          .fill(TILE_COLORS.grass + shade);
-      }
-    }
+        const byte = grid(x, y);
+        const color = TILE_COLORS[byte] ?? TILE_COLORS[TILE_GRASS];
+        const ox = x * TILE_SIZE;
+        const oy = y * TILE_SIZE;
 
-    // Non-grass tiles from the snapshot overlay the base.
-    for (const tile of parsed) {
-      const base = TILE_COLORS[tile.kind] ?? TILE_COLORS.grass;
-      const shade = (tile.x + tile.y) & 1 ? -0x0a0a0a : 0;
-      this.layer
-        .rect(tile.x * TILE_SIZE, tile.y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-        .fill(base + shade);
+        // The tile's full square, then the diagonal edge cuts.
+        this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(color);
+
+        const mask = cornerMask(grid, x, y);
+        if (mask === 0) continue;
+        for (const bit of CORNER_BITS) {
+          if ((mask & bit) === 0) continue;
+          const foreign = TILE_COLORS[cornerTerrain(grid, x, y, bit)] ?? color;
+          const tri = CORNER_TRIANGLES[bit];
+          this.layer
+            .poly([ox + tri[0], oy + tri[1], ox + tri[2], oy + tri[3], ox + tri[4], oy + tri[5]])
+            .fill(foreign);
+        }
+      }
     }
   }
 }

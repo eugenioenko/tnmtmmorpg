@@ -31,7 +31,7 @@
  *   entity         id u16, kind string, x u16, y u16, componentCount u8,
  *                  (key string, JSON blob)*
  *   tile           x u16, y u16, kind byte
- *   kind byte      TILE_KIND_BYTE[kind]; 255 is an escape: the next bytes
+ *   kind byte      TILE_BYTE_BY_KIND[kind]; 255 is an escape: the next bytes
  *                  are a string, for kinds the table does not know yet
  *   disabledFeatures  count u8, then count length-prefixed names (absent
  *                  when the snapshot has none — the client renders no banner)
@@ -45,8 +45,8 @@
  */
 
 import {
+  TILE_BYTE_BY_KIND,
   TILE_KIND_BY_BYTE,
-  TILE_KIND_BYTE,
   type DeltaSnapshot,
   type EntityState,
   type FullSnapshot,
@@ -230,7 +230,7 @@ function decodeEntity(d: BinaryDecoder): EntityState {
 function encodeTile(e: BinaryEncoder, tile: TileState): void {
   e.writeU16(tile.x);
   e.writeU16(tile.y);
-  const byte = TILE_KIND_BYTE[tile.kind];
+  const byte = TILE_BYTE_BY_KIND[tile.kind];
   if (byte === undefined) {
     // Unknown kind: escape byte + string, so the round-trip stays lossless
     // even for kinds added after this table.
