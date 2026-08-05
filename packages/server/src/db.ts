@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS kv (
 export function openDb(path: string): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  // Write-ahead logging with a relaxed sync. The default journal mode does a
+  // full fsync per transaction, which made a bulk flush (a chunk's worth of
+  // freshly decorated entities) cost hundreds of milliseconds — several
+  // whole ticks of stutter. WAL + NORMAL risks only the last transaction on
+  // a power cut, and the 50-tick flush interval already accepts ~5s of loss.
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
   db.exec(SCHEMA);
   return db;
 }
@@ -67,6 +74,46 @@ export function openDb(path: string): DatabaseSync {
  * Upsert one entity. `rev` ticks up by one per save; the rest of the row is
  * the entity's live state serialized as JSON in the `data` blob.
  */
+/**
+ * Persist many entities and delete many rows in ONE transaction, with the
+ * statements prepared once.
+ *
+ * The per-entity path below is fine for a stray write but catastrophic in
+ * bulk: every call is its own implicit transaction (one fsync each) and
+ * re-prepares two statements, so flushing a chunk's worth of decoration —
+ * ~260 rows — took over 500ms, blocking the tick loop for half a second.
+ * Batched it is a couple of milliseconds.
+ */
+export function saveEntities(
+  db: DatabaseSync,
+  entities: Iterable<Entity>,
+  deleteIds: Iterable<number>,
+): void {
+  // `rev` increments in SQL, so there is no SELECT per row.
+  const upsert = db.prepare(
+    `INSERT INTO entities (id, kind, chunk, data, rev) VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT(id) DO UPDATE SET
+       kind = excluded.kind, chunk = excluded.chunk, data = excluded.data, rev = rev + 1`,
+  );
+  const remove = db.prepare('DELETE FROM entities WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const e of entities) {
+      upsert.run(
+        e.id,
+        e.kind,
+        e.chunk,
+        JSON.stringify({ x: e.x, y: e.y, components: e.components }),
+      );
+    }
+    for (const id of deleteIds) remove.run(id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 export function saveEntity(db: DatabaseSync, entity: Entity): void {
   const prev = db.prepare('SELECT rev FROM entities WHERE id = ?').get(entity.id) as
     | { rev: number }

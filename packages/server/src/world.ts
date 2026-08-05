@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { TILE_GRASS, WALKABLE_TILES, type WorldCoord } from '@game/shared';
-import { getSet as kvGetSet, saveEntity } from './db.ts';
+import { getSet as kvGetSet, saveEntities } from './db.ts';
 import type { EntityRow } from './db.ts';
 import {
   CHUNK_SHIFT,
@@ -341,12 +341,16 @@ export class World {
    * cannot happen (setTile loads before it writes).
    */
   flushDirty(db: DatabaseSync): void {
-    const deleteRow = db.prepare('DELETE FROM entities WHERE id = ?');
+    // One transaction for the whole flush. Per-entity writes meant one fsync
+    // each, so a bulk flush blocked the tick loop for hundreds of ms.
+    const writes: Entity[] = [];
+    const deletes: number[] = [];
     for (const id of this.dirty) {
       const entity = this.entities.get(id);
-      if (entity) saveEntity(db, entity);
-      else deleteRow.run(id);
+      if (entity) writes.push(entity);
+      else deletes.push(id); // gone from the world: the row goes too
     }
+    if (writes.length > 0 || deletes.length > 0) saveEntities(db, writes, deletes);
     this.dirty.clear();
     this.tiles.flushDirty(db);
   }
