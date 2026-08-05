@@ -72,17 +72,11 @@ export interface CancelCraftIntent extends BaseIntent {
   stationEntityId: number;
 }
 
-/** Phase 7: melee attack intent — hit `targetId` if adjacent. */
-export interface AttackIntent extends BaseIntent {
-  kind: 'attack';
-  targetId: number;
-}
-
 /**
  * Everything a client can send. Discriminated on `kind`: 'move', the Phase 5
- * inventory kinds, the Phase 6 crafting kinds and the Phase 7 'attack' kind
- * are handled by core; every other kind dispatches to the feature command
- * with that namespaced id.
+ * inventory kinds and the Phase 6 crafting kinds are handled by core; every
+ * other kind dispatches to the feature command with that namespaced id
+ * (e.g. 'combat:attack' — combat is a feature, not core).
  */
 export type Intent =
   | MoveIntent
@@ -92,5 +86,4 @@ export type Intent =
   | SwapIntent
   | CraftIntent
   | CancelCraftIntent
-  | AttackIntent
   | CommandIntent;

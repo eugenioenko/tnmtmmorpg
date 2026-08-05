@@ -1,6 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type {
-  AttackIntent,
   CancelCraftIntent,
   CraftIntent,
   DropIntent,
@@ -14,14 +13,12 @@ import type {
 import type { World } from './world.ts';
 import { formatProfileReport, type Profiler } from './profiler.ts';
 import { buildSnapshot, forgetSession } from './snapshot.ts';
-import { handleAttackIntent } from './intents/attack.ts';
 import { handleCancelCraftIntent, handleCraftIntent } from './intents/craft.ts';
 import { handleDropIntent } from './intents/drop.ts';
 import { handleMoveIntent } from './intents/move.ts';
 import { handlePickupIntent } from './intents/pickup.ts';
 import { handleSwapIntent } from './intents/swap.ts';
 import { handleTransferIntent } from './intents/transfer.ts';
-import type { CombatContext } from './systems/combat.ts';
 import type { CraftingContext } from './systems/crafting.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 
@@ -61,8 +58,6 @@ export interface TickLoopOptions {
   inventory?: InventoryContext;
   /** Phase 6: recipe registry + world for the craft/cancelCraft intents. */
   crafting?: CraftingContext;
-  /** Phase 7: world + event bus for the 'attack' intent (adjacency + damage). */
-  combat?: CombatContext;
   /** Profiling: per-tick timing, per-system timings, counts; no-op when off. */
   profiler?: Profiler;
   /** Profiling: current connected session count, read once per tick. */
@@ -98,7 +93,7 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
 
   /**
    * Validate an intent against the session it came from, then apply it.
-   * Core kinds (move and the Phase 5-7 intents) are delegated to their
+   * Core kinds (move and the Phase 5-6 intents) are delegated to their
    * handlers in intents/*; any other kind is dispatched to the feature
    * command registry, which is a hook passed in by the server.
    *
@@ -111,8 +106,6 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
     switch (intent.kind) {
       case 'move':
         return handleMoveIntent(world, entityId, intent as MoveIntent);
-      case 'attack':
-        return handleAttackIntent(options, entityId, intent as AttackIntent);
       case 'drop':
         return handleDropIntent(options.inventory, entityId, intent as DropIntent);
       case 'pickup':

@@ -16,16 +16,23 @@
  *  - entity:death is spatial too: nearby entities hear it, the payload
  *    keeps the DEAD entity's id (not the receiver's), and the victim is
  *    despawned
+ *  - combat is a FEATURE: damage/death run on the sanctioned WorldAPI
+ *    (world.update for hp, world.despawn on death), and a chasing NPC's
+ *    swing reaches it through core's 'npc:attack' event
  *
  * The network/browser gates (health bars, attacks over websockets) are
- * covered by manual playtesting — see project.md Phase 7.
+ * covered by the end-to-end script and manual playtesting — see project.md
+ * Phase 7.
  */
-import type { NPCComponent } from '@game/shared';
+import type { NPCComponent, StatsComponent, WorldAPI } from '@game/shared';
 import { EventBus } from './events.ts';
 import { World } from './world.ts';
 import { NPC_KIND, spawnNPC } from './npc.ts';
-import { handleAttack, type CombatContext } from './systems/combat.ts';
 import { createNPCSystem } from './systems/npc-ai.ts';
+import { createWorldApi } from './world-api.ts';
+// Combat lives in features/, not core: the test drives it exactly as the
+// server does — through the feature's own code on the sanctioned WorldAPI.
+import combatPlugin, { applyAttack } from '../../../features/combat/index.ts';
 
 let failures = 0;
 
@@ -52,17 +59,46 @@ function npcState(world: World, id: number): NPCComponent {
   return world.get(id)!.components.npc as NPCComponent;
 }
 
-/** The production wiring: combat emits spatially, core NPCs react on the bus. */
-function wireCombatReaction(world: World, bus: EventBus): void {
-  const combat: CombatContext = { world, bus };
+function statsOf(world: World, id: number): StatsComponent {
+  return world.get(id)!.components.stats as StatsComponent;
+}
+
+/** The sanctioned WorldAPI a feature gets, built exactly as the server builds it. */
+function featureApi(world: World, bus: EventBus): WorldAPI {
+  return createWorldApi({
+    world,
+    bus,
+    items: new Map(),
+    recipes: new Map(),
+    log: (msg: string) => console.log(`[feature:combat] ${msg}`),
+  });
+}
+
+/**
+ * The production wiring, minus the network: the combat feature's event
+ * listeners on the bus (against its own WorldAPI), and the core NPC system
+ * reacting to 'entity:damage'. Returns the feature's WorldAPI so a test can
+ * drive an attack the way the 'combat:attack' command does.
+ */
+function wireCombat(world: World, bus: EventBus): {
+  api: WorldAPI;
+  npcSystem: ReturnType<typeof createNPCSystem>;
+} {
+  const api = featureApi(world, bus);
   const npcSystem = createNPCSystem({
     world,
     ais: new Map(),
     apiFor: () => undefined,
     runGuarded: () => false,
-    combat,
+    // Core announces the swing; the feature's 'npc:attack' listener below is
+    // what turns it into damage.
+    requestAttack: (attackerId, targetId) => bus.emit('npc:attack', { attackerId, targetId }),
   });
   bus.on('entity:damage', (payload) => npcSystem.onDamage(payload));
+  for (const [event, handler] of Object.entries(combatPlugin.events)) {
+    bus.on(event, (payload) => handler(api, payload));
+  }
+  return { api, npcSystem };
 }
 
 function unitTests(): void {
@@ -153,12 +189,11 @@ function unitTests(): void {
   console.log('unit: damage at (5, 5) triggers the nearby NPC reaction');
   const nearWorld = new World(1000, 1000, 42);
   const nearBus = new EventBus();
-  wireCombatReaction(nearWorld, nearBus);
-  const combat: CombatContext = { world: nearWorld, bus: nearBus };
+  const { api: nearApi } = wireCombat(nearWorld, nearBus);
   const victimNpc = spawnNPC(nearWorld, NPC_KIND, 5, 5, 'wander');
   const attacker = spawnCombatant(nearWorld, 'player', 5, 6, 8);
   const bystander = spawnNPC(nearWorld, NPC_KIND, 7, 7, 'wander');
-  handleAttack(combat, attacker, victimNpc);
+  applyAttack(nearApi, attacker, victimNpc);
   nearBus.flush();
   nearBus.flushSpatial(nearWorld);
   assert(
@@ -174,12 +209,11 @@ function unitTests(): void {
   console.log('unit: damage at (5000, 5000) triggers no reaction at (0, 0)');
   const farWorld = new World(10000, 10000, 42);
   const farBus = new EventBus();
-  wireCombatReaction(farWorld, farBus);
-  const farCombat: CombatContext = { world: farWorld, bus: farBus };
+  const { api: farApi } = wireCombat(farWorld, farBus);
   const originNpc = spawnNPC(farWorld, NPC_KIND, 1, 1, 'wander');
   const farVictim = spawnNPC(farWorld, NPC_KIND, 5000, 5000, 'wander');
   const farAttacker = spawnCombatant(farWorld, 'player', 5000, 5001, 8);
-  handleAttack(farCombat, farAttacker, farVictim);
+  applyAttack(farApi, farAttacker, farVictim);
   farBus.flush();
   farBus.flushSpatial(farWorld);
   assert(
@@ -195,14 +229,14 @@ function unitTests(): void {
   console.log('unit: entity:death is spatial, payload keeps the dead entity id');
   const dWorld = new World(1000, 1000, 42);
   const dBus = new EventBus();
-  const dCombat: CombatContext = { world: dWorld, bus: dBus };
+  const dApi = featureApi(dWorld, dBus);
   const victim = spawnNPC(dWorld, NPC_KIND, 5, 5, 'wander'); // hp 30
   const killer = spawnCombatant(dWorld, 'player', 5, 6, 100); // one-shots the victim
   const deathHearer = spawnNPC(dWorld, NPC_KIND, 9, 5, 'wander'); // within 30 tiles
   const farNpc = spawnNPC(dWorld, NPC_KIND, 400, 400, 'wander');
   const deaths: unknown[] = [];
   dBus.on('entity:death', (payload) => deaths.push(payload));
-  handleAttack(dCombat, killer, victim);
+  applyAttack(dApi, killer, victim);
   dBus.flush();
   dBus.flushSpatial(dWorld);
   assert(dWorld.get(victim) === undefined, 'the victim despawns on death');
@@ -221,8 +255,119 @@ function unitTests(): void {
   assert(npcState(dWorld, farNpc).state === 'idle', 'the NPC 400 tiles away never heard the death');
 }
 
+/**
+ * Combat as a FEATURE: the damage rules run entirely on the sanctioned
+ * WorldAPI (get -> update -> despawn), reach players through the
+ * 'combat:attack' command and NPCs through core's 'npc:attack' event.
+ */
+function featureTests(): void {
+  console.log('unit: world.update — the new mutation surface');
+  const uWorld = new World(1000, 1000, 42);
+  const uApi = featureApi(uWorld, new EventBus());
+  const patched = uWorld.spawn(
+    'npc',
+    { x: 3, y: 4 },
+    { stats: { hp: 10, maxHp: 10, atk: 1, def: 0, level: 1 } },
+  );
+  assert(
+    uApi.update(patched, { stats: { hp: 4, maxHp: 10, atk: 1, def: 0, level: 1 } }),
+    'update() returns true for a live entity',
+  );
+  assert(statsOf(uWorld, patched).hp === 4, 'the patch lands on the LIVE entity, not a copy');
+  uApi.update(patched, { buff: { kind: 'haste' } });
+  assert(
+    (uWorld.get(patched)!.components.buff as { kind: string }).kind === 'haste' &&
+      statsOf(uWorld, patched).hp === 4,
+    'the merge is shallow: a new component is added, the others are untouched',
+  );
+  uApi.update(patched, { id: 99, kind: 'player', x: 500, y: 500, chunk: '9,9' });
+  const untouched = uWorld.get(patched)!;
+  assert(
+    untouched.id === patched &&
+      untouched.kind === 'npc' &&
+      untouched.x === 3 &&
+      untouched.y === 4 &&
+      untouched.components.x === undefined,
+    'id/kind/x/y/chunk are ignored — position changes go through movement',
+  );
+  assert(uApi.update(999_999, { stats: {} }) === false, 'update() returns false for a missing id');
+
+  console.log('unit: the combat feature applies the damage formula');
+  const fWorld = new World(1000, 1000, 42);
+  const fBus = new EventBus();
+  const { api } = wireCombat(fWorld, fBus);
+  const target = spawnCombatant(fWorld, 'npc', 10, 10, 8); // hp 50, def 2
+  const player = spawnCombatant(fWorld, 'player', 10, 11, 15); // atk 15
+  applyAttack(api, player, target);
+  assert(
+    statsOf(fWorld, target).hp === 36,
+    `atk 15 vs def 2 removes max(1, floor(15 - 1)) = 14 hp (got ${statsOf(fWorld, target).hp})`,
+  );
+
+  const farTarget = spawnCombatant(fWorld, 'npc', 40, 40, 8);
+  applyAttack(api, player, farTarget);
+  assert(statsOf(fWorld, farTarget).hp === 50, 'a target 30 tiles away takes no damage');
+
+  const statless = fWorld.spawn('_example:totem', { x: 10, y: 9 });
+  applyAttack(api, player, statless);
+  assert(
+    fWorld.get(statless) !== undefined && fWorld.get(statless)!.components.stats === undefined,
+    'an entity without stats is untargetable — nothing is written to it',
+  );
+
+  console.log("unit: the 'combat:attack' command (what the client's click sends)");
+  const command = combatPlugin.commands.find((c) => c.name === 'combat:attack');
+  assert(command !== undefined, "the feature registers a 'combat:attack' command");
+  command?.fn(api, { targetId: target }, player);
+  assert(statsOf(fWorld, target).hp === 22, 'the command applies exactly one hit');
+  command?.fn(api, { targetId: 'not-a-number' }, player);
+  command?.fn(api, undefined, player);
+  assert(statsOf(fWorld, target).hp === 22, 'a malformed targetId is rejected, never applied');
+
+  console.log("unit: a chasing NPC's swing reaches combat through 'npc:attack'");
+  const cWorld = new World(1000, 1000, 42);
+  const cBus = new EventBus();
+  const { npcSystem } = wireCombat(cWorld, cBus);
+  const brawler = spawnNPC(cWorld, NPC_KIND, 20, 20, 'wander'); // atk 8
+  const prey = spawnCombatant(cWorld, 'player', 20, 21, 15); // hp 50, def 2
+  const brawlerNpc = npcState(cWorld, brawler);
+  brawlerNpc.state = 'chasing';
+  brawlerNpc.target = prey;
+  npcSystem.run(0.1, 100); // core announces the swing...
+  cBus.flush(); // ...the feature's listener turns it into damage
+  assert(
+    statsOf(cWorld, prey).hp === 43,
+    `the NPC's swing removes max(1, floor(8 - 1)) = 7 hp (got ${statsOf(cWorld, prey).hp})`,
+  );
+  cBus.flushSpatial(cWorld);
+
+  // With no feature listening, core's announcement is inert — this is what
+  // "combat is a feature" buys: uninstall it and the world still runs.
+  const iWorld = new World(1000, 1000, 42);
+  const iBus = new EventBus();
+  const lonelyNpc = spawnNPC(iWorld, NPC_KIND, 20, 20, 'wander');
+  const safePrey = spawnCombatant(iWorld, 'player', 20, 21, 15);
+  const bareSystem = createNPCSystem({
+    world: iWorld,
+    ais: new Map(),
+    apiFor: () => undefined,
+    runGuarded: () => false,
+    requestAttack: (attackerId, targetId) => iBus.emit('npc:attack', { attackerId, targetId }),
+  });
+  const lonelyState = npcState(iWorld, lonelyNpc);
+  lonelyState.state = 'chasing';
+  lonelyState.target = safePrey;
+  bareSystem.run(0.1, 100);
+  iBus.flush();
+  assert(
+    statsOf(iWorld, safePrey).hp === 50,
+    'without the combat feature installed, an NPC swing is inert — core deals no damage',
+  );
+}
+
 async function main(): Promise<void> {
   unitTests();
+  featureTests();
   console.log(
     failures === 0
       ? '\nALL PHASE 7 (SPATIAL EVENTS) TESTS PASSED'

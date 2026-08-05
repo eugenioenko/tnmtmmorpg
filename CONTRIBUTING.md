@@ -70,6 +70,7 @@ Everything a feature gets is the `WorldAPI` — the only sanctioned mutation sur
 |---|---|
 | `world.spawn(kind, { x, y }, components?)` | Spawn an entity of `kind` at a position; returns its id. |
 | `world.get(id)` | A detached copy of an entity's state, or `undefined` if it is gone. |
+| `world.update(id, patch)` | Shallow-merge `patch` into the entity's components and mark it dirty; `false` if the entity is gone. `id`/`kind`/`x`/`y`/`chunk` are ignored — position changes go through movement. |
 | `world.despawn(id)` | Remove an entity from the world. |
 | `world.query(...componentNames)` | Every entity carrying **all** of the named components (detached copies). |
 | `world.tile(x, y)` | Tile kind at `(x, y)`; out-of-bounds reads as `'wall'`. |
@@ -78,6 +79,7 @@ Everything a feature gets is the `WorldAPI` — the only sanctioned mutation sur
 | `world.queryItemsByTag(tag)` | Every registered item definition carrying a tag, across all features. |
 | `world.getAvailableRecipes(stationEntityId)` | Every recipe craftable at a station entity, matched by its kind. |
 | `world.emit(event, payload)` | Queue an event for the bus; listeners fire after systems run. |
+| `world.emitNear(x, y, radius, event, payload)` | Queue a spatially-scoped event: listeners fire once per entity within `radius` tiles of `(x, y)`, with the receiving entity's id merged into the payload. |
 | `world.rng()` | Seeded, deterministic random in `[0, 1)`. `Math.random` is banned by lint. |
 | `world.log(msg)` | Log with your feature's prefix (`[feature:<your-id>]`). |
 
@@ -86,7 +88,7 @@ Systems run every tick (`fn: (world, delta) => ...`, `delta` in seconds), in reg
 ## House rules
 
 - **Namespaced ids.** Every item, recipe, entity kind, system and command id is `feature:thing` (e.g. `farming:seed`, `_example:glowing_essence`). Ids are unique across the whole world — a collision fails boot loudly, naming both claimants. Event keys are exempt: listening to the same event (e.g. `entity:death`) from several features is the point of the bus.
-- **Never mutate another feature's components directly.** If you need something from another feature, compose through tags (recipes match inputs by tag) or events (`world.emit` / listeners). Export a helper only if events cannot express it. Review-enforced.
+- **Never mutate another feature's components directly.** `world.update()` will happily write any component on any entity — that is the price of having a mutation surface at all, and it is review-enforced, not machine-enforced. Patch the components your feature owns. If you need something from another feature, compose through tags (recipes match inputs by tag) or events (`world.emit` / listeners). Export a helper only if events cannot express it.
 - **Always a README.** One paragraph minimum: what the feature does, its items, recipes, systems, commands. Delete sections you don't need.
 - **`plugin.id` must equal the folder name** — the folder is the feature's identity (used by `FEATURES=` and log prefixes).
 - **Game content is a feature.** Core (`packages/*`) owns tiles, movement, inventories, the crafting runtime and sync. If it's game content, it's a feature. Core creep is a merge conflict for six people.

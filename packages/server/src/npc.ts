@@ -9,8 +9,9 @@ import { chunkKey, worldToChunk, type World } from './world.ts';
  *                  current state, and the spawn-chunk leash anchor.
  *  - `movement`  — best-effort stepping: one tile every `1/speed` ticks
  *                  (0.2 tiles/tick = one tile every 5 ticks).
- *  - `stats`     — combat stats (Phase 7): damageable, and chasing NPCs
- *                  fight back. The client draws a health bar from these.
+ *  - `stats`     — hp/maxHp/atk/def: what makes the NPC damageable and
+ *                  lets a chasing one fight back (the rules live in a
+ *                  feature). The client draws a health bar from these.
  *
  * All three components persist like every other entity blob, so NPCs
  * survive restarts; the core NPC system (systems/npc-ai.ts) runs them with
@@ -42,7 +43,7 @@ export function spawnNPC(world: World, kind: string, x: number, y: number, ai: s
       speed: NPC_SPEED,
       nextMoveTick: 0,
     },
-    // Phase 7: combat stats — NPCs take damage and fight back when chased.
+    // Stats: NPCs take damage and fight back when chased (feature rules).
     stats: { hp: 30, maxHp: 30, atk: 8, def: 2, level: 1 },
   });
 }

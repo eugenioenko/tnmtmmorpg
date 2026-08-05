@@ -143,7 +143,8 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
     const color = PLAYER_COLORS[colorIndex++ % PLAYER_COLORS.length];
     const pos = findSpawn(world);
     // Phase 5: every player spawns with a fixed-size inventory.
-    // Phase 7: and with combat stats — damageable, and able to attack.
+    // Phase 7: and with a stats component — hp/atk/def, which the client's
+    // health bar reads and feature-side damage rules act on.
     const entityId = world.spawn('player', pos, {
       player: { color },
       inventory: { slots: emptySlots(INVENTORY_CAPACITY), capacity: INVENTORY_CAPACITY },

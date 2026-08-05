@@ -8,7 +8,6 @@ import { DEFAULT_WORLD_HEIGHT, DEFAULT_WORLD_SEED, DEFAULT_WORLD_WIDTH, World } 
 import { createWorldApi } from './world-api.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 import { tickCrafting, type CraftingContext } from './systems/crafting.ts';
-import { createCombatSystem, type CombatContext } from './systems/combat.ts';
 import { NPC_KIND, scatterNPCs } from './npc.ts';
 import { createNPCSystem, type NPCAIEntry } from './systems/npc-ai.ts';
 import { Profiler } from './profiler.ts';
@@ -130,44 +129,30 @@ async function main(): Promise<void> {
     npcAis.set(ai.name, { feature: ai.feature, name: ai.name, fn: ai.fn });
   }
 
-  /**
-   * Phase 7: the core combat system. Attacks are applied synchronously by
-   * handleAttack — the tick loop's 'attack' intent handler and the NPC
-   * system's chase attacks both call it. Damage and death are announced on
-   * the bus; the per-tick system fn (registered in runSystems below) is the
-   * hook point for tick-driven combat features (regen, DoTs, buffs), which
-   * is why it gets its own sanctioned WorldAPI like any feature would.
-   */
-  const combat: CombatContext = { world, bus };
-  const combatSystem = createCombatSystem();
-  const combatApi = createWorldApi({
-    world,
-    bus,
-    items: registries.items,
-    recipes: registries.recipes,
-    log: (msg: string) => console.log(`[core:combat] ${msg}`),
-  });
-
   const npcSystem = createNPCSystem({
     world,
     ais: npcAis,
     apiFor: (feature) => worldApis.get(feature),
     runGuarded: (feature, name, fn) => guard.run(feature, name, fn),
-    combat,
+    // A chasing NPC with an adjacent target swings; what a swing DOES is
+    // game content, so core only announces it. Whichever feature owns damage
+    // listens for 'npc:attack' — with none installed, swings are inert.
+    requestAttack: (attackerId, targetId) =>
+      bus.emit('npc:attack', { attackerId, targetId }),
   });
 
-  // Phase 7: an NPC that takes a hit drops what it was doing and chases the
-  // attacker. Registered here by core (not by a feature): the listener
-  // needs the LIVE entity, which feature listeners never see. Feature
-  // listeners on 'entity:damage' fire right alongside it. Combat emits the
-  // event spatially (near the victim), so the listener only runs for
-  // entities within the damage radius — the victim is always among them.
+  // An NPC that takes a hit drops what it was doing and chases the attacker.
+  // Registered here by core (not by a feature): the listener needs the LIVE
+  // entity, which feature listeners never see. Feature listeners on
+  // 'entity:damage' fire right alongside it. The event is emitted spatially
+  // (near the victim), so the listener only runs for entities within the
+  // damage radius — the victim is always among them.
   bus.on('entity:damage', (payload) => npcSystem.onDamage(payload));
 
-  // Phase 7: announce deaths. Features hook 'entity:death' via plugin.events
-  // to award loot, spawn graves, etc. — core only announces and logs. The
-  // event is spatial (delivered once per nearby entity), so the log line
-  // is deduped per death; the payload's entityId is the dead entity.
+  // Announce deaths. Features hook 'entity:death' via plugin.events to award
+  // loot, spawn graves, etc. — core only logs. The event is spatial
+  // (delivered once per nearby entity), so the log line is deduped per
+  // death; the payload's entityId is the dead entity.
   const loggedDeaths = new Set<string>();
   bus.on('entity:death', (payload) => {
     const { entityId, killerId } = payload as Partial<DeathEvent>;
@@ -181,17 +166,16 @@ async function main(): Promise<void> {
 
   /**
    * Tick step 2: systems, then queued events flush. Core runtimes run
-   * FIRST — crafting, the NPC system, then combat — before feature
-   * systems, so feature systems observe finished crafts, NPC movement and
-   * combat tick work in the same tick. `tick` is the loop's absolute tick
-   * number (NPC timers persist across restarts and are keyed against it).
+   * FIRST — crafting, then the NPC system — before feature systems, so
+   * feature systems observe finished crafts and NPC movement in the same
+   * tick. `tick` is the loop's absolute tick number (NPC timers persist
+   * across restarts and are keyed against it).
    */
   function runSystems(deltaSeconds: number, tick: number): void {
-    // Core runtimes run first (crafting, NPCs, combat), each timed for the
-    // profiler report. timeSystem is exactly fn() when profiling is off.
+    // Core runtimes run first (crafting, NPCs), each timed for the profiler
+    // report. timeSystem is exactly fn() when profiling is off.
     profiler.timeSystem('core:crafting', () => tickCrafting(crafting));
     profiler.timeSystem('core:npc', () => npcSystem.run(deltaSeconds, tick));
-    profiler.timeSystem('core:combat', () => combatSystem.fn(combatApi, deltaSeconds));
     for (const system of registries.systems) {
       const api = worldApis.get(system.feature);
       if (!api) continue;
@@ -245,8 +229,6 @@ async function main(): Promise<void> {
     inventory,
     // Phase 6: the craft/cancelCraft intents need the recipe registry too.
     crafting,
-    // Phase 7: the 'attack' intent needs world + bus for damage/death events.
-    combat,
     profiler,
     sessionCount: () => wsServer.sessionCount(),
   });

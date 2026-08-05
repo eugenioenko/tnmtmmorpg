@@ -34,6 +34,21 @@ export interface WorldAPI {
   spawn(kind: string, pos: WorldCoord, components?: Record<string, unknown>): number;
   /** A detached snapshot of an entity's state, or undefined if it is gone. */
   get(id: number): EntityState | undefined;
+  /**
+   * Merge `patch` into an entity's components and mark it dirty.
+   * Returns false if the entity does not exist.
+   *
+   * Shallow merge: each key of `patch` replaces the whole component of that
+   * name. Read with get(), build the new component value, write it back —
+   * never mutate the object get() handed you.
+   *
+   * The identity keys `id`, `kind`, `x`, `y` and `chunk` are ignored:
+   * position changes go through movement, not component patches.
+   *
+   * House rule still applies — patch your OWN components. Another feature's
+   * components are reachable, and writing them is a review failure.
+   */
+  update(entityId: number, patch: Record<string, unknown>): boolean;
   despawn(id: number): void;
   /** Every entity carrying all of the named components (detached copies). */
   query(...componentNames: string[]): EntityState[];

@@ -190,10 +190,11 @@ async function main(): Promise<void> {
     }
   }
 
-  // Phase 7: clicking an entity attacks it (the server validates stats and
-  // adjacency). Right-click or a keybind can come later.
+  // Clicking an entity attacks it. 'combat:attack' is a FEATURE command, not
+  // a core intent — with the combat feature uninstalled the server simply
+  // rejects the kind. Damage and adjacency are validated server-side there.
   game.setAttackHandler((entityId) => {
-    sendIntent({ t: 'intent', kind: 'attack', targetId: entityId });
+    sendIntent({ t: 'intent', kind: 'combat:attack', targetId: entityId });
   });
 
   function connect(): void {

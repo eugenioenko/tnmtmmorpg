@@ -39,16 +39,23 @@ function toState(entity: {
 }
 
 /**
+ * Component names a patch may never set: an entity's identity and its place
+ * in the world. Position changes go through movement (core), never through a
+ * component patch, so the spatial index and the chunk key cannot drift.
+ */
+const PROTECTED_KEYS = new Set(['id', 'kind', 'x', 'y', 'chunk']);
+
+/**
  * The sanctioned feature API. Feature code never sees the World class or
- * any other core internal: spawn/get/despawn/query/tile/setTile/give/emit/
- * emitNear/rng/log is the entire surface, and the only way to change the
- * world.
+ * any other core internal: spawn/get/update/despawn/query/tile/setTile/give/
+ * emit/emitNear/rng/log is the entire surface, and the only way to change
+ * the world.
  *
- * get()/query() return detached copies of components, so features cannot
- * mutate another entity's state in place. Features change state through
- * give() (inventory, Phase 5) and by spawning, despawning and setting tiles;
- * the tick loop's intent handlers mutate entities directly, and every change
- * marks the entity dirty for persistence.
+ * get()/query() return detached copies, so nothing is ever mutated by
+ * accident: a component change is an explicit update() call naming the
+ * entity. That read-copy/write-back split is what lets game content — hp
+ * changes, crop growth, buffs — live in features instead of core. Every
+ * change marks the entity dirty for persistence.
  */
 export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps): WorldAPI {
   return {
@@ -66,6 +73,21 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
     get(id: number): EntityState | undefined {
       const entity = world.get(id);
       return entity ? toState(entity) : undefined;
+    },
+
+    // The write half of get(): a feature reads a detached copy, builds the
+    // new component value, and hands it back here. Shallow merge on the LIVE
+    // entity, then dirty so it persists. Identity and position keys are
+    // silently dropped — movement is core's, not a component patch.
+    update(entityId: number, patch: Record<string, unknown>): boolean {
+      const entity = world.get(entityId);
+      if (!entity) return false;
+      for (const [key, value] of Object.entries(patch)) {
+        if (PROTECTED_KEYS.has(key)) continue;
+        entity.components[key] = value;
+      }
+      world.markDirty(entityId);
+      return true;
     },
 
     despawn(id: number): void {

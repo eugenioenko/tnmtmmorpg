@@ -12,7 +12,6 @@ import { isMovementComponent, isNPCComponent } from '@game/shared';
 import { CHUNK_SIZE, worldToChunk, type Entity, type World } from '../world.ts';
 import { findPath } from '../pathfinding.ts';
 import { NPC_KIND } from '../npc.ts';
-import { handleAttack, type CombatContext } from './combat.ts';
 
 /**
  * The core NPC system (registered in server/src/index.ts, running before
@@ -93,8 +92,14 @@ export interface NPCSystemOptions {
   apiFor: (feature: string) => WorldAPI | undefined;
   /** Run feature AI code under the guard; returns false when skipped/disabled. */
   runGuarded: (feature: string, name: string, fn: () => void) => boolean;
-  /** Phase 7: combat context for chase attacks (NPCs hit adjacent targets). */
-  combat: CombatContext;
+  /**
+   * Announce that a chasing NPC swung at its target. The system decides WHEN
+   * an NPC swings (that is AI); what a swing DOES is game content and lives
+   * in a feature, so this is just an announcement — server/index.ts routes it
+   * onto the event bus as 'npc:attack'. With no feature listening, swings are
+   * inert and nothing else changes.
+   */
+  requestAttack: (attackerId: number, targetId: number) => void;
 }
 
 export interface NPCSystem {
@@ -341,10 +346,10 @@ export function createNPCSystem(options: NPCSystemOptions): NPCSystem {
       runAI(options, entity, nearby, tick, warnedAis);
       applyMovement(world, entity, npc, movement, tick);
 
-      // 4. Chase attacks (Phase 7): a chasing NPC whose target is adjacent
-      //    swings at it every CHASE_ATTACK_INTERVAL ticks. This is a direct
-      //    call into the core combat system — intents come from network
-      //    sessions, NPCs act on their own. handleAttack re-checks stats and
+      // 4. Chase attacks: a chasing NPC whose target is adjacent swings at
+      //    it every CHASE_ATTACK_INTERVAL ticks. The system only announces
+      //    the swing (requestAttack -> the 'npc:attack' event); whatever
+      //    feature owns damage decides the rest, and re-checks stats and
       //    adjacency, so a vanished target is a harmless no-op.
       if (npc.state === 'chasing' && typeof npc.target === 'number') {
         const target = world.get(npc.target);
@@ -352,7 +357,7 @@ export function createNPCSystem(options: NPCSystemOptions): NPCSystem {
           const last = lastChaseAttack.get(entity.id) ?? -Infinity;
           if (tick - last >= CHASE_ATTACK_INTERVAL) {
             lastChaseAttack.set(entity.id, tick);
-            handleAttack(options.combat, entity.id, npc.target);
+            options.requestAttack(entity.id, npc.target);
           }
         }
       }
