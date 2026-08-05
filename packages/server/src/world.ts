@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { TILE_GRASS, TILE_WATER, WALKABLE_TILES, type WorldCoord } from '@game/shared';
+import { TILE_GRASS, WALKABLE_TILES, type WorldCoord } from '@game/shared';
 import { saveEntity } from './db.ts';
 import type { EntityRow } from './db.ts';
 import {
@@ -197,41 +197,35 @@ export class World {
     return result;
   }
 
-  private inBounds(x: number, y: number): boolean {
-    return x >= 0 && y >= 0 && x < this.width && y < this.height;
-  }
 
-  private isBorder(x: number, y: number): boolean {
-    return x === 0 || y === 0 || x === this.width - 1 || y === this.height - 1;
-  }
 
   /**
-   * Tile kind at (x, y). Out of bounds and the world border read as 'water'
-   * (the border is ocean). Unloaded chunks are generated deterministically
-   * on first read, so every in-bounds coordinate has a stable answer.
+   * Tile kind at (x, y). Coordinates wrap around the torus — there are no
+   * edges. Unloaded chunks are generated deterministically on first read.
    */
   tile(x: number, y: number): TileKind {
-    if (!this.inBounds(x, y) || this.isBorder(x, y)) return 'water';
-    return this.tiles.tileAt(x, y);
+    const wx = ((x % this.width) + this.width) % this.width;
+    const wy = ((y % this.height) + this.height) % this.height;
+    return this.tiles.tileAt(wx, wy);
   }
 
   /**
-   * The raw tile byte at (x, y) without generating anything: out of bounds
-   * reads as water, unvisited areas read as grass. This is the fast
-   * walkability probe — unlike `tile()` it never generates a chunk, so a
-   * movement check across an unvisited world costs a map lookup.
+   * The raw tile byte at (x, y) without generating anything. Coordinates
+   * wrap around the torus. Unvisited areas read as grass.
    */
   tileByte(x: number, y: number): number {
-    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return TILE_WATER;
-    const { cx, cy, lx, ly } = worldToChunk(x, y);
+    const wx = ((x % this.width) + this.width) % this.width;
+    const wy = ((y % this.height) + this.height) % this.height;
+    const { cx, cy, lx, ly } = worldToChunk(wx, wy);
     const chunk = this.tiles.getChunk(cx, cy);
     if (!chunk) return TILE_GRASS; // ungenerated = grass
     return chunk[ly * CHUNK_SIZE + lx];
   }
 
   setTile(x: number, y: number, kind: string): void {
-    if (!this.inBounds(x, y)) return;
-    this.tiles.setTile(x, y, kind);
+    const wx = ((x % this.width) + this.width) % this.width;
+    const wy = ((y % this.height) + this.height) % this.height;
+    this.tiles.setTile(wx, wy, kind);
   }
 
   isWalkable(x: number, y: number): boolean {
@@ -306,7 +300,7 @@ export class World {
   /**
    * Deterministic per-chunk generation from the world seed: layered noise
    * (see generateChunk in world-chunks.ts) classifies every tile into one of
-   * the 8 terrain kinds; the world border is ocean. The same seed always
+   * the 8 terrain kinds. The world wraps like a torus. The same seed always
    * produces the same world.
    */
   generateChunk(cx: number, cy: number): Uint8Array {
