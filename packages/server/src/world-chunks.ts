@@ -150,51 +150,49 @@ export function generateChunk(
         continue;
       }
 
-      const elevation = fbm(seed, wx * 0.03, wy * 0.03, 5);
-      const moisture = fbm(seed + 5000, wx * 0.025, wy * 0.025, 4);
+      // Larger features: lower frequency multipliers produce continent-scale
+      // terrain instead of scattered noise ponds.  Elevation drives oceans,
+      // landmass and mountains; moisture separates forest/swamp from scrubland.
+      const elevation = fbm(seed, wx * 0.006, wy * 0.006, 4);
+      const moisture = fbm(seed + 5000, wx * 0.005, wy * 0.005, 3);
 
       // Latitude temperature (north=cold, south=hot)
       const lat = 1 - wy / (worldHeight - 1); // 1 at top, 0 at bottom
-      const tempVar = fbm(seed + 10000, wx * 0.02, wy * 0.02, 2) * 0.25;
+      const tempVar = fbm(seed + 10000, wx * 0.004, wy * 0.004, 2) * 0.2;
       const temperature = lat * 1.0 + tempVar;
 
-      // Deep water
-      if (elevation < 0.3) {
+      // Deep water — larger bodies at this lowered frequency
+      if (elevation < 0.33) {
         data[ly * CHUNK_SIZE + lx] = TILE_WATER;
         continue;
       }
-      // Shallow water → sand (beach)
-      if (elevation < 0.36) {
+      // Narrow beach band at water's edge
+      if (elevation < 0.38) {
         data[ly * CHUNK_SIZE + lx] = TILE_SAND;
         continue;
       }
-      // Mountains
-      if (elevation > 0.78) {
+      // Mountain ranges — form at high elevation
+      if (elevation > 0.74) {
         data[ly * CHUNK_SIZE + lx] = TILE_MOUNTAIN;
         continue;
       }
-      // High mountains → snowy peaks
-      if (elevation > 0.7 && temperature > 0.55) {
+      // Snowy peaks at very high elevation, or cold northern latitudes
+      if ((elevation > 0.66 && temperature > 0.55) || temperature > 0.70) {
         data[ly * CHUNK_SIZE + lx] = TILE_SNOW;
         continue;
       }
-      // Cold regions → snow
-      if (temperature > 0.72) {
-        data[ly * CHUNK_SIZE + lx] = TILE_SNOW;
-        continue;
-      }
-      // Wet + low → swamp
-      if (moisture > 0.6 && elevation < 0.48) {
+      // Wet lowlands → swamp
+      if (moisture > 0.55 && elevation < 0.50) {
         data[ly * CHUNK_SIZE + lx] = TILE_SWAMP;
         continue;
       }
-      // Wet → forest
-      if (moisture > 0.5) {
+      // Moist regions → forest
+      if (moisture > 0.45) {
         data[ly * CHUNK_SIZE + lx] = TILE_FOREST;
         continue;
       }
-      // Dry → dirt/scrubland
-      if (moisture < 0.3) {
+      // Dry regions → dirt/scrubland
+      if (moisture < 0.28) {
         data[ly * CHUNK_SIZE + lx] = TILE_DIRT;
         continue;
       }

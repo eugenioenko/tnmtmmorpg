@@ -56,7 +56,7 @@ export const WALKABLE_TILES: Set<number> = new Set([
 
 // Client colors
 export const TILE_COLORS: Record<number, number> = {
-  [TILE_GRASS]: 0x7ec850,
+  [TILE_GRASS]: 0x5ea83c,
   [TILE_WATER]: 0x4a90d9,
   [TILE_MOUNTAIN]: 0x8b8682,
   [TILE_SAND]: 0xe8d5a3,
