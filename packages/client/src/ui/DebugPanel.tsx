@@ -37,6 +37,9 @@ export function DebugPanel({ game }: { game: Game }) {
       </button>
       {open && (
         <div className="debug-rows">
+          <div>
+            pos: {state.playerX}, {state.playerY}
+          </div>
           <div>tick: {state.tick}</div>
           <div>ping: {state.pingMs} ms</div>
           <div>entities: {state.entityCount}</div>

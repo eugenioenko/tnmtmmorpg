@@ -5,9 +5,18 @@ export interface BaseIntent {
   t: 'intent';
 }
 
+/** Upper bound on a single move intent's stride, in tiles. */
+export const MAX_MOVE_DIST = 100;
+
 export interface MoveIntent extends BaseIntent {
   kind: 'move';
   dir: Direction;
+  /**
+   * How many tiles to travel, 1..MAX_MOVE_DIST (default 1). The server still
+   * walks the path one tile at a time and stops at the first blocked tile —
+   * this is a stride, never a teleport, so water and mountains hold.
+   */
+  dist?: number;
 }
 
 export interface DropIntent extends BaseIntent {

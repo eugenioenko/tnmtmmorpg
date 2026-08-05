@@ -1,3 +1,4 @@
+import { MAX_MOVE_DIST } from '@game/shared';
 import type { Direction, MoveIntent, WorldCoord } from '@game/shared';
 import type { World } from '../world.ts';
 
@@ -30,13 +31,35 @@ export function handleMoveIntent(world: World, entityId: number, intent: MoveInt
     return;
   }
 
+  // Optional stride (exploration aid). Anything not a positive integer is
+  // forgery or a client bug; clamp rather than trust, and cap the cost of a
+  // single intent at MAX_MOVE_DIST steps.
+  const raw = intent.dist;
+  let dist = 1;
+  if (raw !== undefined) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+      console.warn(`[tick] entity ${entityId} sent invalid move dist '${String(raw)}' — rejected`);
+      return;
+    }
+    dist = raw > MAX_MOVE_DIST ? MAX_MOVE_DIST : raw;
+  }
+
   const entity = world.get(entityId);
   if (!entity) return; // despawned before the queue was drained
 
   const delta = DELTA[dir];
-  const target = { x: entity.x + delta.x, y: entity.y + delta.y };
-  if (!world.isWalkable(target.x, target.y)) return; // blocked: authoritative rejection, silently
-
-  // Move in place; coords wrap around the torus world automatically.
-  world.moveEntity(entityId, target.x, target.y);
+  // A stride jumps over whatever is in between — that is the point of it for
+  // exploration, since walking would just stop at the first lake. Only the
+  // landing tile is validated: scan back toward the origin for the nearest
+  // walkable tile so a jump never leaves an entity standing inside water or
+  // a mountain. dist === 1 reduces to the ordinary single-tile move.
+  for (let step = dist; step >= 1; step--) {
+    const nx = entity.x + delta.x * step;
+    const ny = entity.y + delta.y * step;
+    if (!world.isWalkable(nx, ny)) continue;
+    // Move in place; coords wrap around the torus world automatically.
+    world.moveEntity(entityId, nx, ny);
+    return;
+  }
+  // Every candidate tile was blocked: authoritative rejection, silently.
 }

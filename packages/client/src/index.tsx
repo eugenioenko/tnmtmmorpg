@@ -26,16 +26,28 @@ interface Pong {
   ts: number;
 }
 
-const KEY_TO_DIR: Record<string, Direction> = {
+/** Arrow keys: ordinary one-tile steps. */
+const ARROW_TO_DIR: Record<string, Direction> = {
   ArrowUp: 'n',
   ArrowDown: 's',
   ArrowRight: 'e',
   ArrowLeft: 'w',
+};
+
+/** WASD: long strides, for crossing a 10000x10000 world on foot. */
+const WASD_TO_DIR: Record<string, Direction> = {
   w: 'n',
   s: 's',
   d: 'e',
   a: 'w',
+  W: 'n',
+  S: 's',
+  D: 'e',
+  A: 'w',
 };
+
+/** Tiles per WASD press. The server caps this at MAX_MOVE_DIST. */
+const STRIDE = 100;
 
 function isFullSnapshot(value: unknown): value is FullSnapshot {
   if (typeof value !== 'object' || value === null) return false;
@@ -272,10 +284,17 @@ async function main(): Promise<void> {
       window.dispatchEvent(new Event(INVENTORY_TOGGLE_EVENT));
       return;
     }
-    const dir = KEY_TO_DIR[event.key];
-    if (!dir) return;
-    event.preventDefault();
-    sendIntent({ t: 'intent', kind: 'move', dir });
+    const step = ARROW_TO_DIR[event.key];
+    if (step) {
+      event.preventDefault();
+      sendIntent({ t: 'intent', kind: 'move', dir: step });
+      return;
+    }
+    const stride = WASD_TO_DIR[event.key];
+    if (stride) {
+      event.preventDefault();
+      sendIntent({ t: 'intent', kind: 'move', dir: stride, dist: STRIDE });
+    }
   });
 
   startPing();

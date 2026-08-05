@@ -16,6 +16,9 @@ export interface GameState {
   pingMs: number;
   fps: number;
   connected: boolean;
+  /** The local player's authoritative world tile, straight from the snapshot. */
+  playerX: number;
+  playerY: number;
   /** Feature systems the server guard auto-disabled; shown in a banner. */
   disabledFeatures: string[];
 }
@@ -93,6 +96,8 @@ export class Game {
       pingMs: 0,
       fps: 0,
       connected: false,
+      playerX: 0,
+      playerY: 0,
       disabledFeatures: [],
     };
   }
@@ -230,6 +235,8 @@ export class Game {
     if (this.buffer.length > 2) this.buffer.shift();
     this.state.tick = worldState.tick;
     this.state.entityCount = worldState.entities.length;
+    this.state.playerX = worldState.playerX;
+    this.state.playerY = worldState.playerY;
 
     // Ground-item stack counts change when someone picks up part of a
     // stack; refresh the count labels directly from the newest state.
