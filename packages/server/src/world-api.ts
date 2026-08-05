@@ -47,15 +47,16 @@ const PROTECTED_KEYS = new Set(['id', 'kind', 'x', 'y', 'chunk']);
 
 /**
  * The sanctioned feature API. Feature code never sees the World class or
- * any other core internal: spawn/get/update/despawn/query/tile/setTile/give/
- * emit/emitNear/rng/log is the entire surface, and the only way to change
- * the world.
+ * any other core internal: spawn/get/update/move/despawn/query/queryNear/
+ * hasPlayerNear/tile/walkable/setTile/give/emit/emitNear/rng/log is the
+ * entire surface, and the only way to change the world.
  *
- * get()/query() return detached copies, so nothing is ever mutated by
- * accident: a component change is an explicit update() call naming the
- * entity. That read-copy/write-back split is what lets game content — hp
- * changes, crop growth, buffs — live in features instead of core. Every
- * change marks the entity dirty for persistence.
+ * get()/query()/queryNear() return detached copies, so nothing is ever
+ * mutated by accident: a component change is an explicit update() call
+ * naming the entity, and a position change is an explicit move() call that
+ * core validates. That read-copy/write-back split is what lets game content
+ * — hp changes, crop growth, creature brains — live in features instead of
+ * core. Every change marks the entity dirty for persistence.
  */
 export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps): WorldAPI {
   return {
@@ -90,6 +91,18 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
       return true;
     },
 
+    // The position counterpart of update(): the feature names a destination,
+    // core decides whether it happens. Walkability, the torus wrap, the
+    // spatial index and the dirty set all stay here, so a feature cannot
+    // walk an entity into water, off the map, or out of the index — the
+    // worst a wrong destination can do is return false.
+    move(entityId: number, x: number, y: number): boolean {
+      if (!world.get(entityId)) return false;
+      if (!world.isWalkable(x, y)) return false;
+      world.moveEntity(entityId, x, y);
+      return true;
+    },
+
     despawn(id: number): void {
       world.despawn(id);
     },
@@ -98,8 +111,31 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
       return world.query(...componentNames).map(toState);
     },
 
+    // Spatial read: the same chunk index the snapshot builder uses, so
+    // "everything near me" costs a few set lookups instead of a full scan.
+    queryNear(x: number, y: number, radius: number): EntityState[] {
+      const result: EntityState[] = [];
+      for (const id of world.entityIdsInRadius(x, y, radius)) {
+        const entity = world.get(id);
+        if (entity) result.push(toState(entity));
+      }
+      return result;
+    },
+
+    // The cheap half of queryNear: first hit wins, nothing is allocated.
+    // This is what makes per-entity activity checks affordable every tick.
+    hasPlayerNear(x: number, y: number, radius: number): boolean {
+      return world.hasPlayerNear(x, y, radius);
+    },
+
     tile(x: number, y: number): string {
       return world.tile(x, y);
+    },
+
+    // Core's collision rule, readable but not settable. move() enforces the
+    // same call, so a feature never has to (and never gets to) reimplement it.
+    walkable(x: number, y: number): boolean {
+      return world.isWalkable(x, y);
     },
 
     setTile(x: number, y: number, kind: string): void {

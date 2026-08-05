@@ -182,7 +182,7 @@ export class World {
     return this.dirty.size;
   }
 
-  /** Number of live entities in the world (players, NPCs, items, ...). */
+  /** Number of live entities in the world (players, items, creatures, ...). */
   get entityCount(): number {
     return this.entities.size;
   }
@@ -253,8 +253,8 @@ export class World {
    * True when a player entity is within `radius` tiles (Chebyshev) of
    * (x, y). Uses the spatial index, so it costs a handful of chunk-set
    * lookups regardless of how many entities the world holds. This is the
-   * spatial-sleeping probe: an NPC whose whole neighborhood holds no player
-   * costs zero CPU per tick because its AI never runs.
+   * spatial-sleeping probe features lean on: an entity whose whole
+   * neighborhood holds no player can be skipped entirely for that tick.
    */
   hasPlayerNear(x: number, y: number, radius: number): boolean {
     const { cx, cy } = worldToChunk(x, y);

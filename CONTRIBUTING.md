@@ -56,7 +56,7 @@ That's the whole feature. Send the intent `{ t: 'intent', kind: 'hello:wave' }` 
 
 ## Feature API version
 
-`@game/shared` exports `FEATURE_API_VERSION` (currently `1`). Bumping it means the feature API contract changed in a breaking way — a deliberate, announced act, never an incidental one. If you change the shape of `definePlugin`/`defineClient`, the `WorldAPI`, or the wire messages in a way that breaks existing features, bump it and say so in the changelog/issue before merging. Check the version with:
+`@game/shared` exports `FEATURE_API_VERSION` (currently `2` — v2 dropped `plugin.ais`, the core NPC behaviour registry; NPCs are a feature now and behaviours register through its `npc:register-ais` event, see `features/npc/README.md`). Bumping it means the feature API contract changed in a breaking way — a deliberate, announced act, never an incidental one. If you change the shape of `definePlugin`/`defineClient`, the `WorldAPI`, or the wire messages in a way that breaks existing features, bump it and say so in the changelog/issue before merging. Check the version with:
 
 ```
 node -e "import('@game/shared').then((m) => console.log(m.FEATURE_API_VERSION))"
@@ -70,10 +70,14 @@ Everything a feature gets is the `WorldAPI` — the only sanctioned mutation sur
 |---|---|
 | `world.spawn(kind, { x, y }, components?)` | Spawn an entity of `kind` at a position; returns its id. |
 | `world.get(id)` | A detached copy of an entity's state, or `undefined` if it is gone. |
-| `world.update(id, patch)` | Shallow-merge `patch` into the entity's components and mark it dirty; `false` if the entity is gone. `id`/`kind`/`x`/`y`/`chunk` are ignored — position changes go through movement. |
+| `world.update(id, patch)` | Shallow-merge `patch` into the entity's components and mark it dirty; `false` if the entity is gone. `id`/`kind`/`x`/`y`/`chunk` are ignored — position changes go through `move()`. |
+| `world.move(id, x, y)` | Move an entity to a tile; `false` (and nothing happens) if it is gone or the tile is not walkable. Core validates collision, wraps the torus coordinates and keeps the spatial index in sync — a feature asks, core decides. Not a path: step one tile at a time if you want walls to stop you. |
 | `world.despawn(id)` | Remove an entity from the world. |
 | `world.query(...componentNames)` | Every entity carrying **all** of the named components (detached copies). |
+| `world.queryNear(x, y, radius)` | Detached copies of every entity within `radius` tiles (Chebyshev) of `(x, y)`, off the spatial index. Reach for this instead of filtering `query()` by distance. |
+| `world.hasPlayerNear(x, y, radius)` | Is a player within `radius` tiles? Stops at the first hit and allocates nothing — cheap enough to ask per entity per tick, which is what makes "only simulate near players" affordable. |
 | `world.tile(x, y)` | Tile kind at `(x, y)`; out-of-bounds reads as `'wall'`. |
+| `world.walkable(x, y)` | Can an entity stand there? The same rule `move()` enforces — ask rather than re-deriving it from `tile()`. |
 | `world.setTile(x, y, kind)` | Change a tile's kind (e.g. `'grass'`, `'wall'`). |
 | `world.give(entityId, itemId, count)` | Hand `count` of an item to an entity; returns how many were **not** accepted (leftover). |
 | `world.queryItemsByTag(tag)` | Every registered item definition carrying a tag, across all features. |
@@ -83,7 +87,11 @@ Everything a feature gets is the `WorldAPI` — the only sanctioned mutation sur
 | `world.rng()` | Seeded, deterministic random in `[0, 1)`. `Math.random` is banned by lint. |
 | `world.log(msg)` | Log with your feature's prefix (`[feature:<your-id>]`). |
 
-Systems run every tick (`fn: (world, delta) => ...`, `delta` in seconds), in registration order, each in its own try/catch with a time budget. Three failures auto-disable your feature's system loudly, and everything else keeps running.
+Systems run every tick (`fn: (world, delta) => ...`, `delta` in seconds), in registration order, each in its own try/catch with a time budget. Three failures auto-disable your feature's system loudly, and everything else keeps running. A system that needs a tick number counts its own runs — core's tick counter restarts at 1 on every boot, so the two are the same number.
+
+### Extension points
+
+Features never import each other, so a feature that wants to be extended offers a hook over the event bus: it emits a namespaced event carrying a `register`-style callback, and anyone can answer from their own `events` map. `features/npc` does exactly this with `npc:register-ais` for NPC behaviours — copy that pattern rather than adding a registry to core.
 
 ## House rules
 

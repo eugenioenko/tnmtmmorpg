@@ -16,23 +16,28 @@
  *  - entity:death is spatial too: nearby entities hear it, the payload
  *    keeps the DEAD entity's id (not the receiver's), and the victim is
  *    despawned
- *  - combat is a FEATURE: damage/death run on the sanctioned WorldAPI
- *    (world.update for hp, world.despawn on death), and a chasing NPC's
- *    swing reaches it through core's 'npc:attack' event
+ *
+ * And the two features that make it a game, both driven exactly as the
+ * server drives them — through their own code, on the sanctioned WorldAPI:
+ *  - combat is a FEATURE: damage/death run on world.update/world.despawn,
+ *    and a chasing NPC's swing reaches it through the npc feature's
+ *    'npc:attack' event
+ *  - NPCs are a FEATURE: world.move is the only way it changes a position
+ *    and core refuses the tiles it may not stand on; a fresh world seeds
+ *    itself once; and another feature registers a behaviour through
+ *    'npc:register-ais' with no core registry and no import between them
  *
  * The network/browser gates (health bars, attacks over websockets) are
  * covered by the end-to-end script and manual playtesting — see project.md
  * Phase 7.
  */
-import type { NPCComponent, StatsComponent, WorldAPI } from '@game/shared';
+import type { EntityState, NPCComponent, StatsComponent, WorldAPI } from '@game/shared';
 import { EventBus } from './events.ts';
 import { World } from './world.ts';
-import { NPC_KIND, spawnNPC } from './npc.ts';
-import { createNPCSystem } from './systems/npc-ai.ts';
 import { createWorldApi } from './world-api.ts';
-// Combat lives in features/, not core: the test drives it exactly as the
-// server does — through the feature's own code on the sanctioned WorldAPI.
+// Combat and NPCs both live in features/, not core.
 import combatPlugin, { applyAttack } from '../../../features/combat/index.ts';
+import npcPlugin, { createNPCSystem, NPC_KIND, spawnNPC } from '../../../features/npc/index.ts';
 
 let failures = 0;
 
@@ -43,6 +48,10 @@ function assert(cond: boolean, label: string): void {
     failures++;
     console.error(`  FAIL - ${label}`);
   }
+}
+
+function abs(n: number): number {
+  return n < 0 ? -n : n;
 }
 
 function spawnCombatant(world: World, kind: string, x: number, y: number, atk: number): number {
@@ -64,41 +73,56 @@ function statsOf(world: World, id: number): StatsComponent {
 }
 
 /** The sanctioned WorldAPI a feature gets, built exactly as the server builds it. */
-function featureApi(world: World, bus: EventBus): WorldAPI {
+function featureApi(world: World, bus: EventBus, feature: string): WorldAPI {
   return createWorldApi({
     world,
     bus,
     items: new Map(),
     recipes: new Map(),
-    log: (msg: string) => console.log(`[feature:combat] ${msg}`),
+    log: (msg: string) => console.log(`[feature:${feature}] ${msg}`),
   });
 }
 
+/** The registration callback the npc feature puts in its 'npc:register-ais' payload. */
+type RegisterAI = (
+  name: string,
+  fn: (world: WorldAPI, entity: EntityState, nearby: EntityState[], tick: number) => void,
+) => void;
+
+interface Wiring {
+  /** The combat feature's own WorldAPI (its log prefix, its detached copies). */
+  combat: WorldAPI;
+  /** The npc feature's own WorldAPI. */
+  npc: WorldAPI;
+  /** Run the npc feature's system once, as the tick loop would. */
+  runNpcTick: () => void;
+}
+
 /**
- * The production wiring, minus the network: the combat feature's event
- * listeners on the bus (against its own WorldAPI), and the core NPC system
- * reacting to 'entity:damage'. Returns the feature's WorldAPI so a test can
- * drive an attack the way the 'combat:attack' command does.
+ * The production wiring, minus the network: each feature gets its own
+ * WorldAPI, its event listeners go on the bus against that API, and the npc
+ * feature's system is instantiated the way the loader instantiates it.
+ *
+ * `seed: true` lets the one-time world scatter happen; every other test
+ * claims the kv flag up front so its world holds only the NPCs it spawned.
+ *
+ * Note the npc system's FIRST tick is its bootstrap (offer the behaviour
+ * registry, seed a fresh world) and does nothing else — tests that expect an
+ * NPC to act run two ticks.
  */
-function wireCombat(world: World, bus: EventBus): {
-  api: WorldAPI;
-  npcSystem: ReturnType<typeof createNPCSystem>;
-} {
-  const api = featureApi(world, bus);
-  const npcSystem = createNPCSystem({
-    world,
-    ais: new Map(),
-    apiFor: () => undefined,
-    runGuarded: () => false,
-    // Core announces the swing; the feature's 'npc:attack' listener below is
-    // what turns it into damage.
-    requestAttack: (attackerId, targetId) => bus.emit('npc:attack', { attackerId, targetId }),
-  });
-  bus.on('entity:damage', (payload) => npcSystem.onDamage(payload));
-  for (const [event, handler] of Object.entries(combatPlugin.events)) {
-    bus.on(event, (payload) => handler(api, payload));
+function wireFeatures(world: World, bus: EventBus, options: { seed?: boolean } = {}): Wiring {
+  const combat = featureApi(world, bus, 'combat');
+  const npc = featureApi(world, bus, 'npc');
+  if (!options.seed) world.getSet('npc:seeded', '1');
+
+  const system = createNPCSystem();
+  for (const [event, handler] of Object.entries(npcPlugin.events)) {
+    bus.on(event, (payload) => handler(npc, payload));
   }
-  return { api, npcSystem };
+  for (const [event, handler] of Object.entries(combatPlugin.events)) {
+    bus.on(event, (payload) => handler(combat, payload));
+  }
+  return { combat, npc, runNpcTick: () => system(npc, 0.1) };
 }
 
 function unitTests(): void {
@@ -169,10 +193,11 @@ function unitTests(): void {
   console.log('unit: 1000 NPCs, one hit reaches only the nearby');
   const popWorld = new World(10000, 10000, 42);
   const popBus = new EventBus();
+  const popApi = featureApi(popWorld, popBus, 'npc');
   let deliveries = 0;
   popBus.on('entity:damage', () => deliveries++);
   for (let i = 0; i < 1000; i++) {
-    spawnNPC(popWorld, NPC_KIND, i * 10, 0, 'wander');
+    spawnNPC(popApi, NPC_KIND, i * 10, 0, 'wander');
   }
   popBus.emitNear(5, 5, 20, 'entity:damage', {
     targetId: 0,
@@ -189,11 +214,11 @@ function unitTests(): void {
   console.log('unit: damage at (5, 5) triggers the nearby NPC reaction');
   const nearWorld = new World(1000, 1000, 42);
   const nearBus = new EventBus();
-  const { api: nearApi } = wireCombat(nearWorld, nearBus);
-  const victimNpc = spawnNPC(nearWorld, NPC_KIND, 5, 5, 'wander');
+  const nearWiring = wireFeatures(nearWorld, nearBus);
+  const victimNpc = spawnNPC(nearWiring.npc, NPC_KIND, 5, 5, 'wander');
   const attacker = spawnCombatant(nearWorld, 'player', 5, 6, 8);
-  const bystander = spawnNPC(nearWorld, NPC_KIND, 7, 7, 'wander');
-  applyAttack(nearApi, attacker, victimNpc);
+  const bystander = spawnNPC(nearWiring.npc, NPC_KIND, 7, 7, 'wander');
+  applyAttack(nearWiring.combat, attacker, victimNpc);
   nearBus.flush();
   nearBus.flushSpatial(nearWorld);
   assert(
@@ -209,11 +234,11 @@ function unitTests(): void {
   console.log('unit: damage at (5000, 5000) triggers no reaction at (0, 0)');
   const farWorld = new World(10000, 10000, 42);
   const farBus = new EventBus();
-  const { api: farApi } = wireCombat(farWorld, farBus);
-  const originNpc = spawnNPC(farWorld, NPC_KIND, 1, 1, 'wander');
-  const farVictim = spawnNPC(farWorld, NPC_KIND, 5000, 5000, 'wander');
+  const farWiring = wireFeatures(farWorld, farBus);
+  const originNpc = spawnNPC(farWiring.npc, NPC_KIND, 1, 1, 'wander');
+  const farVictim = spawnNPC(farWiring.npc, NPC_KIND, 5000, 5000, 'wander');
   const farAttacker = spawnCombatant(farWorld, 'player', 5000, 5001, 8);
-  applyAttack(farApi, farAttacker, farVictim);
+  applyAttack(farWiring.combat, farAttacker, farVictim);
   farBus.flush();
   farBus.flushSpatial(farWorld);
   assert(
@@ -229,14 +254,14 @@ function unitTests(): void {
   console.log('unit: entity:death is spatial, payload keeps the dead entity id');
   const dWorld = new World(1000, 1000, 42);
   const dBus = new EventBus();
-  const dApi = featureApi(dWorld, dBus);
-  const victim = spawnNPC(dWorld, NPC_KIND, 5, 5, 'wander'); // hp 30
+  const dWiring = wireFeatures(dWorld, dBus);
+  const victim = spawnNPC(dWiring.npc, NPC_KIND, 5, 5, 'wander'); // hp 30
   const killer = spawnCombatant(dWorld, 'player', 5, 6, 100); // one-shots the victim
-  const deathHearer = spawnNPC(dWorld, NPC_KIND, 9, 5, 'wander'); // within 30 tiles
-  const farNpc = spawnNPC(dWorld, NPC_KIND, 400, 400, 'wander');
+  const deathHearer = spawnNPC(dWiring.npc, NPC_KIND, 9, 5, 'wander'); // within 30 tiles
+  const farNpc = spawnNPC(dWiring.npc, NPC_KIND, 400, 400, 'wander');
   const deaths: unknown[] = [];
   dBus.on('entity:death', (payload) => deaths.push(payload));
-  applyAttack(dApi, killer, victim);
+  applyAttack(dWiring.combat, killer, victim);
   dBus.flush();
   dBus.flushSpatial(dWorld);
   assert(dWorld.get(victim) === undefined, 'the victim despawns on death');
@@ -258,12 +283,12 @@ function unitTests(): void {
 /**
  * Combat as a FEATURE: the damage rules run entirely on the sanctioned
  * WorldAPI (get -> update -> despawn), reach players through the
- * 'combat:attack' command and NPCs through core's 'npc:attack' event.
+ * 'combat:attack' command and NPCs through the npc feature's 'npc:attack'.
  */
-function featureTests(): void {
-  console.log('unit: world.update — the new mutation surface');
+function combatFeatureTests(): void {
+  console.log('unit: world.update — the component mutation surface');
   const uWorld = new World(1000, 1000, 42);
-  const uApi = featureApi(uWorld, new EventBus());
+  const uApi = featureApi(uWorld, new EventBus(), 'combat');
   const patched = uWorld.spawn(
     'npc',
     { x: 3, y: 4 },
@@ -288,14 +313,14 @@ function featureTests(): void {
       untouched.x === 3 &&
       untouched.y === 4 &&
       untouched.components.x === undefined,
-    'id/kind/x/y/chunk are ignored — position changes go through movement',
+    'id/kind/x/y/chunk are ignored — position changes go through move()',
   );
   assert(uApi.update(999_999, { stats: {} }) === false, 'update() returns false for a missing id');
 
   console.log('unit: the combat feature applies the damage formula');
   const fWorld = new World(1000, 1000, 42);
   const fBus = new EventBus();
-  const { api } = wireCombat(fWorld, fBus);
+  const { combat: api } = wireFeatures(fWorld, fBus);
   const target = spawnCombatant(fWorld, 'npc', 10, 10, 8); // hp 50, def 2
   const player = spawnCombatant(fWorld, 'player', 10, 11, 15); // atk 15
   applyAttack(api, player, target);
@@ -327,47 +352,165 @@ function featureTests(): void {
   console.log("unit: a chasing NPC's swing reaches combat through 'npc:attack'");
   const cWorld = new World(1000, 1000, 42);
   const cBus = new EventBus();
-  const { npcSystem } = wireCombat(cWorld, cBus);
-  const brawler = spawnNPC(cWorld, NPC_KIND, 20, 20, 'wander'); // atk 8
+  const cWiring = wireFeatures(cWorld, cBus);
+  const brawler = spawnNPC(cWiring.npc, NPC_KIND, 20, 20, 'wander'); // atk 8
   const prey = spawnCombatant(cWorld, 'player', 20, 21, 15); // hp 50, def 2
   const brawlerNpc = npcState(cWorld, brawler);
   brawlerNpc.state = 'chasing';
   brawlerNpc.target = prey;
-  npcSystem.run(0.1, 100); // core announces the swing...
-  cBus.flush(); // ...the feature's listener turns it into damage
+  cWiring.runNpcTick(); // tick 1 is the feature's one-time bootstrap...
+  cWiring.runNpcTick(); // ...tick 2 announces the swing...
+  cBus.flush(); // ...and the combat feature's listener turns it into damage
   assert(
     statsOf(cWorld, prey).hp === 43,
     `the NPC's swing removes max(1, floor(8 - 1)) = 7 hp (got ${statsOf(cWorld, prey).hp})`,
   );
   cBus.flushSpatial(cWorld);
 
-  // With no feature listening, core's announcement is inert — this is what
+  // With no feature listening, the announcement is inert — this is what
   // "combat is a feature" buys: uninstall it and the world still runs.
   const iWorld = new World(1000, 1000, 42);
   const iBus = new EventBus();
-  const lonelyNpc = spawnNPC(iWorld, NPC_KIND, 20, 20, 'wander');
+  const iApi = featureApi(iWorld, iBus, 'npc');
+  iWorld.getSet('npc:seeded', '1');
+  const bareSystem = createNPCSystem();
+  const lonelyNpc = spawnNPC(iApi, NPC_KIND, 20, 20, 'wander');
   const safePrey = spawnCombatant(iWorld, 'player', 20, 21, 15);
-  const bareSystem = createNPCSystem({
-    world: iWorld,
-    ais: new Map(),
-    apiFor: () => undefined,
-    runGuarded: () => false,
-    requestAttack: (attackerId, targetId) => iBus.emit('npc:attack', { attackerId, targetId }),
-  });
   const lonelyState = npcState(iWorld, lonelyNpc);
   lonelyState.state = 'chasing';
   lonelyState.target = safePrey;
-  bareSystem.run(0.1, 100);
+  bareSystem(iApi, 0.1); // bootstrap tick
+  bareSystem(iApi, 0.1); // the swing tick
   iBus.flush();
   assert(
     statsOf(iWorld, safePrey).hp === 50,
-    'without the combat feature installed, an NPC swing is inert — core deals no damage',
+    'without the combat feature installed, an NPC swing is inert — nobody deals damage',
   );
+}
+
+/**
+ * NPCs as a FEATURE: it owns the brains, core owns the map. Every position
+ * change is a world.move() request core is free to refuse, and the behaviour
+ * registry lives here, not in a core registry.
+ */
+function npcFeatureTests(): void {
+  console.log('unit: world.move — the position mutation surface');
+  const mWorld = new World(100, 100, 42);
+  const mApi = featureApi(mWorld, new EventBus(), 'npc');
+  // Pin the tiles this test walks on: the noise generator owns everything else.
+  for (const x of [0, 9, 10, 11, 12]) mWorld.setTile(x, 10, 'grass');
+  const walker = mWorld.spawn('npc', { x: 10, y: 10 });
+  assert(mApi.move(walker, 11, 10), 'move() onto a walkable tile succeeds');
+  assert(mWorld.get(walker)!.x === 11, 'the entity actually moved');
+
+  mWorld.setTile(12, 10, 'water');
+  assert(mApi.move(walker, 12, 10) === false, 'move() into water is refused — core owns collision');
+  assert(mWorld.get(walker)!.x === 11, 'a refused move changes nothing');
+
+  assert(
+    mApi.move(walker, 100, 10) && mWorld.get(walker)!.x === 0,
+    'coordinates wrap around the torus, exactly as core movement does',
+  );
+  assert(
+    mWorld.entityIdsInRadius(0, 10, 0).has(walker),
+    'the spatial index followed the move — the feature never touches it',
+  );
+  assert(mApi.move(999_999, 5, 5) === false, 'move() returns false for a missing id');
+  assert(
+    mApi.walkable(11, 10) && !mApi.walkable(12, 10),
+    'walkable() reports the same rule move() enforces',
+  );
+
+  console.log('unit: spatial sleeping and the wander step');
+  const wWorld = new World(1000, 1000, 42);
+  const wBus = new EventBus();
+  const wWiring = wireFeatures(wWorld, wBus);
+  const sleeper = spawnNPC(wWiring.npc, NPC_KIND, 500, 500, 'wander');
+  const awake = spawnNPC(wWiring.npc, NPC_KIND, 100, 100, 'wander');
+  wWorld.spawn('player', { x: 101, y: 100 });
+  const before = { ...npcState(wWorld, sleeper) };
+  for (let i = 0; i < 40; i++) wWiring.runNpcTick();
+  assert(
+    npcState(wWorld, sleeper).state === before.state &&
+      npcState(wWorld, sleeper).lastActionTick === before.lastActionTick,
+    'an NPC 400 tiles from the nearest player never ran its AI',
+  );
+  const moved = wWorld.get(awake)!;
+  assert(
+    npcState(wWorld, awake).state !== 'idle' || moved.x !== 100 || moved.y !== 100,
+    'an NPC with a player nearby woke up and acted',
+  );
+  assert(
+    abs(moved.x - 100) <= 8 && abs(moved.y - 100) <= 8,
+    `40 ticks at speed 0.2 moves at most 8 tiles (landed at ${moved.x}, ${moved.y})`,
+  );
+
+  console.log('unit: a fresh world seeds its own population');
+  const sWorld = new World(200, 200, 42);
+  const sBus = new EventBus();
+  const sWiring = wireFeatures(sWorld, sBus, { seed: true });
+  sWiring.runNpcTick();
+  const seeded = sWorld.query('npc');
+  assert(seeded.length === 20, `a fresh world scatters 20 NPCs (got ${seeded.length})`);
+  assert(
+    seeded.every((e) => abs(e.x - 100) <= 10 && abs(e.y - 100) <= 10),
+    'all of them land in the box at the world centre, where players spawn',
+  );
+  assert(sWorld.getSet('npc:seeded') === '1', 'the one-time kv flag is claimed');
+  const restarted = createNPCSystem();
+  restarted(sWiring.npc, 0.1);
+  assert(sWorld.query('npc').length === 20, 'a restart does not double-seed');
+
+  console.log("unit: another feature registers a behaviour via 'npc:register-ais'");
+  const rWorld = new World(1000, 1000, 42);
+  const rBus = new EventBus();
+  const rWiring = wireFeatures(rWorld, rBus);
+  let ranBrain = 0;
+  let ranBoom = 0;
+  rBus.on('npc:register-ais', (payload) => {
+    const register = (payload as { register?: unknown }).register as RegisterAI | undefined;
+    assert(typeof register === 'function', 'the offer carries a register callback');
+    if (typeof register !== 'function') return;
+    register('test:brain', (_world, entity) => {
+      ranBrain++;
+      (entity.components.npc as NPCComponent).state = 'fleeing';
+    });
+    register('test:boom', () => {
+      ranBoom++;
+      throw new Error('this behaviour is broken');
+    });
+    register('wander', () => assert(false, "'wander' must not be overridable"));
+  });
+  const brainy = spawnNPC(rWiring.npc, NPC_KIND, 10, 10, 'test:brain');
+  const broken = spawnNPC(rWiring.npc, NPC_KIND, 14, 10, 'test:boom');
+  rWorld.spawn('player', { x: 12, y: 10 }); // keeps both awake
+
+  rWiring.runNpcTick(); // tick 1: the bootstrap tick puts the offer on the bus
+  rBus.flush(); // the other feature answers
+  assert(ranBrain === 0, 'no behaviour ran before the offer was answered');
+  rWiring.runNpcTick(); // tick 2: the registered behaviours run
+  assert(ranBrain === 1, 'a behaviour registered by another feature runs the next tick');
+  assert(
+    npcState(rWorld, brainy).state === 'fleeing',
+    'its component mutations are written back to the live entity',
+  );
+
+  for (let i = 0; i < 5; i++) rWiring.runNpcTick();
+  assert(
+    ranBoom === 3,
+    `a throwing behaviour is dropped after 3 strikes (ran ${ranBoom} times in 6 ticks)`,
+  );
+  assert(
+    rWorld.get(broken) !== undefined && npcState(rWorld, broken).ai === 'test:boom',
+    'its NPC keeps ticking on the built-in wander instead of taking the system down',
+  );
+  assert(ranBrain === 6, 'the healthy behaviour is untouched by the broken one');
 }
 
 async function main(): Promise<void> {
   unitTests();
-  featureTests();
+  combatFeatureTests();
+  npcFeatureTests();
   console.log(
     failures === 0
       ? '\nALL PHASE 7 (SPATIAL EVENTS) TESTS PASSED'

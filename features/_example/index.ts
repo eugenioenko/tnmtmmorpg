@@ -5,8 +5,22 @@ import {
   isMovementComponent,
   isNPCComponent,
   type Direction,
+  type EntityState,
   type ItemDef,
+  type WorldAPI,
 } from '@game/shared';
+
+/**
+ * The npc feature's extension point: it emits 'npc:register-ais' once at
+ * boot with this callback in the payload. Typed locally on purpose — a
+ * feature never imports another feature, so the shape is duplicated (four
+ * lines) rather than shared, and this file still compiles with the npc
+ * feature uninstalled (the listener simply never fires).
+ */
+type RegisterAI = (
+  name: string,
+  fn: (world: WorldAPI, entity: EntityState, nearby: EntityState[], tick: number) => void,
+) => void;
 
 /**
  * The tutorial feature — a copy-me skeleton. Everything registered here is
@@ -19,8 +33,9 @@ import {
  *                           polished_stone (Phase 6, crafted outputs)
  * - two recipes:            '_example:glowing_essence' and
  *                           '_example:polished_stone', both at the workbench
- * - one AI:                 '_example:wander' (NPC behavior; 'wander' is
- *                           the core built-in, this shows the AIDef contract)
+ * - one AI:                 '_example:wander' (an NPC behaviour, registered
+ *                           through the npc feature's 'npc:register-ais'
+ *                           event — this shows cross-feature registration)
  * - commands:               '_example:greet', '_example:give' (hand items to
  *                           the sender), '_example:chest' (spawn a test
  *                           container next to the sender), '_example:items'
@@ -77,28 +92,6 @@ export default definePlugin({
           if (++ticks % 50 === 0) world.log(`beat (tick ${ticks})`);
         };
       })(),
-    },
-  ],
-
-  ais: [
-    {
-      // Demo AI: the AIDef contract in miniature. The core NPC system runs
-      // this (guarded) once per tick while the NPC is awake and applies
-      // movement afterwards — an AI only decides state and a direction, it
-      // never moves the NPC itself. `entity` is the LIVE NPC: mutations to
-      // its npc/movement components are real. `nearby` are detached copies.
-      name: '_example:wander',
-      fn: (world, entity) => {
-        const npc = entity.components.npc;
-        const movement = entity.components.movement;
-        if (!isNPCComponent(npc) || !isMovementComponent(movement)) return;
-        // Rest a while, then wander; pick a fresh direction while wandering.
-        if (world.rng() < 0.04) npc.state = npc.state === 'idle' ? 'wandering' : 'idle';
-        if (npc.state === 'wandering') {
-          const dirs: readonly Direction[] = ['n', 's', 'e', 'w'];
-          movement.dir = dirs[~~(world.rng() * dirs.length)];
-        }
-      },
     },
   ],
 
@@ -229,13 +222,42 @@ export default definePlugin({
         world.spawn('npc', { x, y }, {
           npc: { ai, state: 'idle', lastActionTick: 0, spawnChunk: `${~~(x / 64)},${~~(y / 64)}` },
           movement: { speed: 0.2, nextMoveTick: 0 },
-          // Phase 7: stats make the NPC attackable (the core spawnNPC carries
-          // the same defaults — this command duplicates the spawn shape).
+          // Stats make the NPC attackable. This duplicates the spawn shape
+          // features/npc uses; features never import each other, and the
+          // component blob is the contract. With features/npc uninstalled
+          // the entity spawns and simply never moves.
           stats: { hp: 30, maxHp: 30, atk: 8, def: 2, level: 1 },
         });
         world.log(`spawned NPC (ai '${ai}') at (${x}, ${y})`);
       },
     },
   ],
-  events: {},
+  events: {
+    /**
+     * Cross-feature NPC behaviour registration. The npc feature owns the
+     * concept and offers it over the ordinary event bus — no core registry,
+     * no import between features. With features/npc uninstalled this
+     * listener simply never fires.
+     *
+     * Demo AI: `entity` is a DETACHED snapshot of the NPC. Mutate its
+     * npc/movement components — the npc feature writes them back and
+     * performs the step. An AI only decides state and a direction, it never
+     * moves the NPC itself. `nearby` are detached copies too.
+     */
+    'npc:register-ais': (_world, payload) => {
+      const register = (payload as { register?: unknown }).register as RegisterAI | undefined;
+      if (typeof register !== 'function') return;
+      register('_example:wander', (world, entity) => {
+        const npc = entity.components.npc;
+        const movement = entity.components.movement;
+        if (!isNPCComponent(npc) || !isMovementComponent(movement)) return;
+        // Rest a while, then wander; pick a fresh direction while wandering.
+        if (world.rng() < 0.04) npc.state = npc.state === 'idle' ? 'wandering' : 'idle';
+        if (npc.state === 'wandering') {
+          const dirs: readonly Direction[] = ['n', 's', 'e', 'w'];
+          movement.dir = dirs[~~(world.rng() * dirs.length)];
+        }
+      });
+    },
+  },
 });

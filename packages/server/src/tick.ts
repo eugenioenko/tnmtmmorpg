@@ -40,10 +40,10 @@ export interface TickLoopOptions {
   db: DatabaseSync;
   /**
    * Feature hook: run registered systems in order, then flush the event bus.
-   * The loop's absolute tick number is passed so core runtimes (NPC AI,
-   * crafting) can keep tick-based timers that persist across restarts.
+   * A system that needs a tick-based timer counts its own runs — the loop's
+   * tick number restarts at 1 on every boot, so the two are the same number.
    */
-  runSystems?: (deltaSeconds: number, tick: number) => void;
+  runSystems?: (deltaSeconds: number) => void;
   /**
    * Feature hook: flush spatially-scoped events (emitNear) after the regular
    * bus flush. Called after runSystems so global listeners fire first and
@@ -145,11 +145,11 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
     }
 
     // 2. Feature systems run in registration order (guarded), then the
-    //    queued event bus flushes. Core runtimes (crafting, NPC AI) run
-    //    first inside runSystems, before feature systems. Spatially-scoped
-    //    events (entity:damage, entity:death) flush after the regular
-    //    queue, still within the same tick.
-    if (options.runSystems) options.runSystems(TICK_MS / 1000, tickNumber);
+    //    queued event bus flushes. The core crafting runtime runs first
+    //    inside runSystems, before feature systems. Spatially-scoped events
+    //    (entity:damage, entity:death) flush after the regular queue, still
+    //    within the same tick.
+    if (options.runSystems) options.runSystems(TICK_MS / 1000);
     options.flushSpatial?.();
 
     // 3. Build and broadcast one snapshot per connected session. The first

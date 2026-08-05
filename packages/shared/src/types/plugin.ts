@@ -8,7 +8,7 @@ import type { ItemDef, RecipeDef } from './items.ts';
  * incidental one. Features are written against a specific version; core
  * guards or migrates when the number moves.
  */
-export const FEATURE_API_VERSION = 1;
+export const FEATURE_API_VERSION = 2;
 
 // ── Phase 4: feature plugin system ─────────────────────────────────────────
 
@@ -49,11 +49,45 @@ export interface WorldAPI {
    * components are reachable, and writing them is a review failure.
    */
   update(entityId: number, patch: Record<string, unknown>): boolean;
+  /**
+   * Move an entity to (x, y). The write half of position, exactly as
+   * update() is the write half of components: a feature asks, core decides.
+   *
+   * Core validates the landing tile against its own walkability rule, wraps
+   * the coordinates around the torus world and keeps the spatial index and
+   * the dirty set in sync. Returns false — and moves nothing — when the
+   * entity is gone or the tile is not walkable, so a feature can never walk
+   * an entity into water however wrong its own arithmetic is.
+   *
+   * There is no path check: (x, y) is where the entity ends up, not a route.
+   * Step one tile at a time if you want walls to actually stop you.
+   */
+  move(entityId: number, x: number, y: number): boolean;
   despawn(id: number): void;
   /** Every entity carrying all of the named components (detached copies). */
   query(...componentNames: string[]): EntityState[];
+  /**
+   * Detached copies of every entity within `radius` tiles (Chebyshev) of
+   * (x, y). Backed by the spatial index, so it costs a few chunk lookups
+   * instead of a scan of the whole world — reach for this instead of
+   * filtering query() by distance.
+   */
+  queryNear(x: number, y: number, radius: number): EntityState[];
+  /**
+   * True when a player entity is within `radius` tiles (Chebyshev) of
+   * (x, y). Same index as queryNear but it stops at the first hit and
+   * allocates nothing, which is what makes "only simulate near players"
+   * affordable to check per entity per tick.
+   */
+  hasPlayerNear(x: number, y: number, radius: number): boolean;
   /** Tile kind at (x, y); out-of-bounds reads as 'water'. */
   tile(x: number, y: number): string;
+  /**
+   * Can an entity stand on (x, y)? The same rule move() enforces — ask
+   * rather than re-deriving walkability from tile(), so a feature's idea of
+   * what blocks movement can never drift from core's.
+   */
+  walkable(x: number, y: number): boolean;
   setTile(x: number, y: number, kind: string): void;
   /** Hand `count` of an item to an entity; returns how many were NOT accepted. */
   give(entityId: number, itemId: string, count: number): number;
@@ -104,32 +138,14 @@ export interface PluginAPI {
   entityKinds: string[];
   systems: SystemDef[];
   commands: CommandDef[];
-  /** Event listeners keyed by event name; several features may listen to one event. */
-  events: Record<string, EventHandler>;
   /**
-   * NPC behaviors. A behavior name goes into an NPC's `npc.ai` component;
-   * the core NPC system looks it up here, falls back to the built-in
-   * 'wander', and runs it (guarded) once per tick while the NPC is awake.
-   * Optional — a feature with no NPCs simply omits it.
+   * Event listeners keyed by event name; several features may listen to one
+   * event. This is also how a feature plugs into an extension point another
+   * feature offers — e.g. the npc feature emits 'npc:register-ais' once at
+   * boot with a `register` callback in the payload, so NPC behaviours are
+   * registered here rather than in a core registry.
    */
-  ais?: AIDef[];
-}
-
-/**
- * A feature-registered NPC behavior, run by the core NPC system once per
- * tick while the NPC is awake (chunks with no players nearby sleep for free).
- *
- * `entity` is the LIVE NPC entity this AI controls — NOT a detached copy.
- * Mutate its `npc` and `movement` components in place to change state and
- * request movement (set `movement.dir`; the system performs the actual
- * position change and keeps the spatial index in sync). Never set
- * `entity.x`/`entity.y` directly, and never touch other entities' live
- * state — `nearby` holds detached copies for exactly that reason.
- */
-export interface AIDef {
-  /** Namespaced id, e.g. '_example:wander'; referenced by `npc.ai`. */
-  name: string;
-  fn: (world: WorldAPI, entity: EntityState, nearby: EntityState[], tick: number) => void;
+  events: Record<string, EventHandler>;
 }
 
 /**

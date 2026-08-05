@@ -8,8 +8,6 @@ import { DEFAULT_WORLD_HEIGHT, DEFAULT_WORLD_SEED, DEFAULT_WORLD_WIDTH, World } 
 import { createWorldApi } from './world-api.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 import { tickCrafting, type CraftingContext } from './systems/crafting.ts';
-import { NPC_KIND, scatterNPCs } from './npc.ts';
-import { createNPCSystem, type NPCAIEntry } from './systems/npc-ai.ts';
 import { Profiler } from './profiler.ts';
 import { startWsServer } from './ws.ts';
 
@@ -35,14 +33,6 @@ async function main(): Promise<void> {
       ` (${WORLD_WIDTH}x${WORLD_HEIGHT}, seed ${WORLD_SEED})`,
   );
 
-  // NPCs: on a fresh world, seed a small wandering population near the
-  // origin (players spawn there, so the world reads alive from the first
-  // moment). NPCs persist like every other entity, so the count check keeps
-  // restarts from duplicating them.
-  if (world.query(NPC_KIND).length === 0) {
-    const spawned = scatterNPCs(world, 20);
-    console.log(`[server] spawned ${spawned} wandering NPCs near the origin`);  }
-
   // ── Phase 4: feature plugins ─────────────────────────────────────────────
   // Loaded once at boot; the registries are immutable afterwards. Entities
   // persisted by a feature that is no longer installed simply load as
@@ -61,8 +51,8 @@ async function main(): Promise<void> {
     onDisabled: (feature, name, reason) => {
       console.error(`[server] feature '${feature}' disabled '${name}': ${reason}`);
     },
-    // Every guarded run (feature systems, commands, event listeners, NPC
-    // AIs) feeds its wall-clock time into the profiler report.
+    // Every guarded run (feature systems, commands, event listeners) feeds
+    // its wall-clock time into the profiler report.
     onRun: (name, ms) => profiler.recordSystemTime(name, ms),
   });
 
@@ -116,39 +106,6 @@ async function main(): Promise<void> {
     recipes: registries.recipes,
   };
 
-  /**
-   * The core NPC system: spatial sleeping (NPCs in chunks with no players
-   * nearby cost zero CPU), AI dispatch and best-effort movement. Feature-
-   * registered AIs (registries.ais) run guarded, exactly like systems; the
-   * built-in 'wander' is core. Registered here by core, not by a feature —
-   * the loop must run even when FEATURES env selects no feature that
-   * registers an AI, and only core touches the live entity store.
-   */
-  const npcAis = new Map<string, NPCAIEntry>();
-  for (const ai of registries.ais) {
-    npcAis.set(ai.name, { feature: ai.feature, name: ai.name, fn: ai.fn });
-  }
-
-  const npcSystem = createNPCSystem({
-    world,
-    ais: npcAis,
-    apiFor: (feature) => worldApis.get(feature),
-    runGuarded: (feature, name, fn) => guard.run(feature, name, fn),
-    // A chasing NPC with an adjacent target swings; what a swing DOES is
-    // game content, so core only announces it. Whichever feature owns damage
-    // listens for 'npc:attack' — with none installed, swings are inert.
-    requestAttack: (attackerId, targetId) =>
-      bus.emit('npc:attack', { attackerId, targetId }),
-  });
-
-  // An NPC that takes a hit drops what it was doing and chases the attacker.
-  // Registered here by core (not by a feature): the listener needs the LIVE
-  // entity, which feature listeners never see. Feature listeners on
-  // 'entity:damage' fire right alongside it. The event is emitted spatially
-  // (near the victim), so the listener only runs for entities within the
-  // damage radius — the victim is always among them.
-  bus.on('entity:damage', (payload) => npcSystem.onDamage(payload));
-
   // Announce deaths. Features hook 'entity:death' via plugin.events to award
   // loot, spawn graves, etc. — core only logs. The event is spatial
   // (delivered once per nearby entity), so the log line is deduped per
@@ -165,17 +122,14 @@ async function main(): Promise<void> {
   });
 
   /**
-   * Tick step 2: systems, then queued events flush. Core runtimes run
-   * FIRST — crafting, then the NPC system — before feature systems, so
-   * feature systems observe finished crafts and NPC movement in the same
-   * tick. `tick` is the loop's absolute tick number (NPC timers persist
-   * across restarts and are keyed against it).
+   * Tick step 2: systems, then queued events flush. The core crafting
+   * runtime runs FIRST, before feature systems, so feature systems observe
+   * finished crafts (outputs delivered, jobs promoted) in the same tick.
    */
-  function runSystems(deltaSeconds: number, tick: number): void {
-    // Core runtimes run first (crafting, NPCs), each timed for the profiler
-    // report. timeSystem is exactly fn() when profiling is off.
+  function runSystems(deltaSeconds: number): void {
+    // The core runtime runs first, timed for the profiler report.
+    // timeSystem is exactly fn() when profiling is off.
     profiler.timeSystem('core:crafting', () => tickCrafting(crafting));
-    profiler.timeSystem('core:npc', () => npcSystem.run(deltaSeconds, tick));
     for (const system of registries.systems) {
       const api = worldApis.get(system.feature);
       if (!api) continue;

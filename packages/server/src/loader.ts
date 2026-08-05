@@ -2,7 +2,6 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type {
-  AIDef,
   CommandDef,
   EventHandler,
   ItemDef,
@@ -48,13 +47,6 @@ export interface EventEntry {
   fn: EventHandler;
 }
 
-/** An NPC behavior registered by a feature; the core NPC system runs it. */
-export interface AIEntry {
-  feature: string;
-  name: string;
-  fn: AIDef['fn'];
-}
-
 /** Everything the runtime needs, merged from every loaded feature. */
 export interface Registries {
   items: Map<string, ItemDef>;
@@ -65,8 +57,6 @@ export interface Registries {
   commands: Map<string, CommandEntry>;
   /** Event listeners by event name; several features may listen to one event. */
   events: Map<string, EventEntry[]>;
-  /** NPC behaviors by namespaced name; the core NPC system dispatches on npc.ai. */
-  ais: AIEntry[];
 }
 
 function emptyRegistries(): Registries {
@@ -77,7 +67,6 @@ function emptyRegistries(): Registries {
     systems: [],
     commands: new Map(),
     events: new Map(),
-    ais: [],
   };
 }
 
@@ -275,19 +264,6 @@ function register(registries: Registries, feature: string, plugin: PluginAPI): v
     registries.commands.set(command.name, { feature, name: command.name, fn: command.fn });
   }
 
-  // NPC behaviors share the global id space with systems and commands — an
-  // id names one thing, whatever it is. Missing (not an array) is fine: a
-  // feature with no NPCs simply omits `ais`.
-  const aiList = Array.isArray(plugin.ais) ? plugin.ais : [];
-  for (const ai of aiList) {
-    if (typeof ai.name !== 'string' || typeof ai.fn !== 'function') {
-      throw new Error(`[loader] feature '${feature}': every ai needs a string name and a fn`);
-    }
-    checkNamespacedId(feature, 'ai', ai.name);
-    claim('ai', ai.name, registries.ais.some((a) => a.name === ai.name));
-    registries.ais.push({ feature, name: ai.name, fn: ai.fn });
-  }
-
   for (const [event, handler] of Object.entries(plugin.events)) {
     checkNamespacedId(feature, 'event', event);
     if (typeof handler !== 'function') {
@@ -336,7 +312,6 @@ export async function loadFeatures(): Promise<{
       `[loader] feature '${name}' registered: ${plugin.items.length} item(s), ` +
         `${plugin.recipes.length} recipe(s), ${plugin.entityKinds.length} kind(s), ` +
         `${plugin.systems.length} system(s), ${plugin.commands.length} command(s), ` +
-        `${(plugin.ais ?? []).length} ai(s), ` +
         `${Object.keys(plugin.events).length} event listener(s)`,
     );
   }
