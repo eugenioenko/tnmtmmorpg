@@ -1,6 +1,6 @@
 // Headless fake players — test the multiplayer server alone.
 //
-//   node tools/bot.mjs --count 2 --url ws://localhost:3000
+//   node tools/bot.mjs --count 2 --url ws://localhost:3010
 //   pnpm bot -- --count 2
 //
 // Each bot connects exactly like a browser player (welcome -> recipes ->
@@ -30,7 +30,7 @@ function usage() {
   return [
     'usage: node tools/bot.mjs [--count N] [--url ws://HOST:PORT] [--seed N]',
     '  --count  number of bots to spawn (default 1)',
-    '  --url    server to connect to (default ws://localhost:3000)',
+    '  --url    server to connect to (default ws://localhost:3010)',
     '  --seed   rng seed so runs are reproducible (default: current time)',
   ].join('\n');
 }
@@ -42,7 +42,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const args = { count: 1, url: 'ws://localhost:3000', seed: Date.now() };
+  const args = { count: 1, url: 'ws://localhost:3010', seed: Date.now() };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--') continue; // pnpm forwards '--' from `pnpm bot -- --count 2`

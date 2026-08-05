@@ -104,7 +104,7 @@ pnpm bot -- --count 2       # terminal 2: two bots connect and play
 Each bot connects exactly like a browser player, then wanders (a wall-aware random walk every 2-5s), picks up ground items it stands on, and crafts at any station it can reach with recipes whose inputs it holds. On a fresh world the bots use the `_example` feature's own commands to stock up on stones and spawn a practice workbench, so you should see `[Bot-1] craft _example:polished_stone at station #N` within a few seconds. Ctrl-C disconnects all bots cleanly. Direct invocation works too:
 
 ```
-node tools/bot.mjs --count 2 --url ws://localhost:3000 --seed 42
+node tools/bot.mjs --count 2 --url ws://localhost:3010 --seed 42
 ```
 
 ## Feature hot-reload

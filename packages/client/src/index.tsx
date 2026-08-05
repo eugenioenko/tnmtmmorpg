@@ -17,7 +17,7 @@ import { registerRecipes } from './recipes.ts';
 import { App, type FeaturePanel } from './ui/App.tsx';
 import { INVENTORY_TOGGLE_EVENT } from './ui/InventoryPanel.tsx';
 
-const WS_URL = (import.meta.env?.VITE_WS_URL as string | undefined) ?? 'ws://localhost:3000';
+const WS_URL = (import.meta.env?.VITE_WS_URL as string | undefined) ?? 'ws://localhost:3010';
 const RECONNECT_DELAY_MS = 1000;
 const PING_INTERVAL_MS = 2000;
 
@@ -217,14 +217,15 @@ async function main(): Promise<void> {
       if (typeof message !== 'object' || message === null) return;
 
       const msg = message as Record<string, unknown>;
-      if (isPong(msg)) {
-        game.state.pingMs = ~~(performance.now() - msg.ts);
+      // Buffer everything until PixiJS is ready; pongs before then are stale.
+      if (!game) {
+        if (!isPong(msg)) pending.push(msg);
         return;
       }
-      // Buffer game-critical messages until PixiJS is ready
-      if (!game) { pending.push(msg); return; }
 
-      if (isWelcome(msg)) {
+      if (isPong(msg)) {
+        game.state.pingMs = ~~(performance.now() - msg.ts);
+      } else if (isWelcome(msg)) {
         game.setLocalEntity(msg.entityId);
       } else if (isRecipesMessage(msg)) {
         registerRecipes(msg.recipes);
