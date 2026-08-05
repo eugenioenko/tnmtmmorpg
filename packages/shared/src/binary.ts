@@ -12,23 +12,41 @@
  *     0x01 FullSnapshot    0x02 DeltaSnapshot    0x03 Welcome
  *     0x04 Pong            0x05 RecipesMessage
  *
- * Everything is little-endian; strings are UTF-8. Coordinates, entity ids
- * and the tick are uint16: the world is 10000x10000 and ids/tick grow
- * slowly, so all of them fit. Out-of-range values THROW rather than
- * silently truncate — a corrupted id or coordinate is worse than a dropped
- * snapshot.
+ * Everything is little-endian; strings are UTF-8. Out-of-range values THROW
+ * rather than silently truncate: a corrupted id or coordinate is worse than a
+ * dropped snapshot.
+ *
+ * Field widths follow one rule — **anything that counts upward forever is
+ * uint32; anything bounded by the world or the viewport stays uint16.**
+ * Both uint32 fields below were uint16 once, on the assumption that they
+ * "grow slowly". They do not, and neither MUST be narrowed again:
+ *
+ *   tick       at 10Hz a uint16 tick overflows after 65535 ticks — 1h49m of
+ *              uptime. Past that every snapshot threw on encode, so clients
+ *              stopped receiving updates and the world looked frozen while
+ *              the server ticked on happily. uint32 lasts ~13.6 years.
+ *
+ *   entity id  comes from a counter restored as MAX(id)+1, so unlike the tick
+ *              a restart does NOT reset it. Observed growth on the live world
+ *              was ~314 ids/hour, which exhausts a uint16 in about 8 days and
+ *              cannot be worked around once reached. uint32 lasts centuries.
+ *
+ * Coordinates stay uint16 deliberately: x and y ride on every entity and
+ * every tile of every snapshot, so widening them would inflate the hottest
+ * field in the format. They are bounded instead — the server refuses to boot
+ * with a world larger than 65536 on a side (see index.ts).
  *
  * Payload layouts (see each encodeX/decodeX pair):
- *   FullSnapshot   tick u16, playerX u16, playerY u16, entityCount u16,
+ *   FullSnapshot   tick u32, playerX u16, playerY u16, entityCount u16,
  *                  entities, tileCount u16, tiles, disabledFeatures
- *   DeltaSnapshot  tick u16, playerX u16, playerY u16, entityCount u16,
- *                  entities, removedEntityCount u16 + ids, tileCount u16,
+ *   DeltaSnapshot  tick u32, playerX u16, playerY u16, entityCount u16,
+ *                  entities, removedEntityCount u16 + u32 ids, tileCount u16,
  *                  tiles, removedTileCount u16 + coords, disabledFeatures
- *   Welcome        entityId u16, color string
+ *   Welcome        entityId u32, color string
  *   Pong           ts float64
  *   RecipesMessage recipeCount u16, recipes
  *
- *   entity         id u16, kind string, x u16, y u16, componentCount u8,
+ *   entity         id u32, kind string, x u16, y u16, componentCount u8,
  *                  (key string, JSON blob)*
  *   tile           x u16, y u16, kind byte
  *   kind byte      TILE_BYTE_BY_KIND[kind]; 255 is an escape: the next bytes
@@ -99,6 +117,13 @@ export class BinaryEncoder {
     this.bytes.push(v & 0xff, (v >> 8) & 0xff);
   }
 
+  writeU32(v: number): void {
+    if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) {
+      throw new RangeError(`writeU32: ${v} does not fit in a uint32`);
+    }
+    this.bytes.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+  }
+
   /** Signed two's-complement; unused by the current layouts (coords are >= 0). */
   writeI16(v: number): void {
     if (!Number.isInteger(v) || v < -0x8000 || v > 0x7fff) {
@@ -167,6 +192,12 @@ export class BinaryDecoder {
     return v;
   }
 
+  readU32(): number {
+    const v = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return v;
+  }
+
   readI16(): number {
     const v = this.view.getInt16(this.offset, true);
     this.offset += 2;
@@ -201,7 +232,7 @@ export class BinaryDecoder {
 // ── shared pieces ──────────────────────────────────────────────────────────
 
 function encodeEntity(e: BinaryEncoder, entity: EntityState): void {
-  e.writeU16(entity.id);
+  e.writeU32(entity.id);
   e.writeString(entity.kind);
   e.writeU16(entity.x);
   e.writeU16(entity.y);
@@ -217,7 +248,7 @@ function encodeEntity(e: BinaryEncoder, entity: EntityState): void {
 }
 
 function decodeEntity(d: BinaryDecoder): EntityState {
-  const id = d.readU16();
+  const id = d.readU32();
   const kind = d.readString();
   const x = d.readU16();
   const y = d.readU16();
@@ -272,7 +303,7 @@ function decodeDisabledFeatures(d: BinaryDecoder): string[] | undefined {
 export function encodeFullSnapshot(s: FullSnapshot): Uint8Array {
   const e = new BinaryEncoder();
   e.writeU8(MSG_FULL);
-  e.writeU16(s.tick);
+  e.writeU32(s.tick);
   e.writeU16(s.playerX);
   e.writeU16(s.playerY);
   e.writeU16(s.entities.length);
@@ -285,7 +316,7 @@ export function encodeFullSnapshot(s: FullSnapshot): Uint8Array {
 
 export function decodeFullSnapshot(buf: Uint8Array, offset: number): FullSnapshot {
   const d = new BinaryDecoder(buf, offset);
-  const tick = d.readU16();
+  const tick = d.readU32();
   const playerX = d.readU16();
   const playerY = d.readU16();
   const entityCount = d.readU16();
@@ -305,13 +336,13 @@ export function decodeFullSnapshot(buf: Uint8Array, offset: number): FullSnapsho
 export function encodeDeltaSnapshot(s: DeltaSnapshot): Uint8Array {
   const e = new BinaryEncoder();
   e.writeU8(MSG_DELTA);
-  e.writeU16(s.tick);
+  e.writeU32(s.tick);
   e.writeU16(s.playerX);
   e.writeU16(s.playerY);
   e.writeU16(s.entities.length);
   for (const entity of s.entities) encodeEntity(e, entity);
   e.writeU16(s.removedEntities.length);
-  for (const id of s.removedEntities) e.writeU16(id);
+  for (const id of s.removedEntities) e.writeU32(id);
   e.writeU16(s.tiles.length);
   for (const tile of s.tiles) encodeTile(e, tile);
   e.writeU16(s.removedTiles.length);
@@ -325,7 +356,7 @@ export function encodeDeltaSnapshot(s: DeltaSnapshot): Uint8Array {
 
 export function decodeDeltaSnapshot(buf: Uint8Array, offset: number): DeltaSnapshot {
   const d = new BinaryDecoder(buf, offset);
-  const tick = d.readU16();
+  const tick = d.readU32();
   const playerX = d.readU16();
   const playerY = d.readU16();
   const entityCount = d.readU16();
@@ -333,7 +364,7 @@ export function decodeDeltaSnapshot(buf: Uint8Array, offset: number): DeltaSnaps
   for (let i = 0; i < entityCount; i++) entities.push(decodeEntity(d));
   const removedEntityCount = d.readU16();
   const removedEntities: number[] = [];
-  for (let i = 0; i < removedEntityCount; i++) removedEntities.push(d.readU16());
+  for (let i = 0; i < removedEntityCount; i++) removedEntities.push(d.readU32());
   const tileCount = d.readU16();
   const tiles: TileState[] = [];
   for (let i = 0; i < tileCount; i++) tiles.push(decodeTile(d));
@@ -362,7 +393,7 @@ export function decodeDeltaSnapshot(buf: Uint8Array, offset: number): DeltaSnaps
 export function encodeWelcome(w: WelcomeMessage): Uint8Array {
   const e = new BinaryEncoder();
   e.writeU8(MSG_WELCOME);
-  e.writeU16(w.entityId);
+  e.writeU32(w.entityId);
   e.writeString(w.color);
   // View limits: the server is authoritative about how much world it sends.
   e.writeU16(w.viewRadiusX ?? VIEW_RADIUS_X);
@@ -375,7 +406,7 @@ export function decodeWelcome(buf: Uint8Array, offset: number): WelcomeMessage {
   const d = new BinaryDecoder(buf, offset);
   return {
     t: 'welcome',
-    entityId: d.readU16(),
+    entityId: d.readU32(),
     color: d.readString(),
     viewRadiusX: d.readU16(),
     viewRadiusY: d.readU16(),

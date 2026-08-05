@@ -25,7 +25,36 @@ const WORLD_SEED = Number(process.env.WORLD_SEED ?? DEFAULT_WORLD_SEED);
 /** Profiling: log per-system timing, memory and snapshot sizes every 100 ticks. */
 const PROFILE = process.env.PROFILE === '1' || process.argv.includes('--profile');
 
+/**
+ * Coordinates travel as uint16 on the wire (binary.ts), which is the right
+ * size for them: x and y ride on every entity and every tile in every
+ * snapshot, so widening them would inflate the hottest field in the codec.
+ *
+ * That is only safe while the world cannot be configured past what a uint16
+ * holds. WORLD_WIDTH/HEIGHT come from the environment, so refuse to boot
+ * rather than serve a world whose far side cannot be described — the failure
+ * would otherwise appear much later as snapshots throwing on encode, which
+ * looks to players like the world freezing.
+ */
+const MAX_WORLD_DIMENSION = 0xffff + 1;
+
+function assertWorldFitsTheWireFormat(): void {
+  for (const [name, value] of [
+    ['WORLD_WIDTH', WORLD_WIDTH],
+    ['WORLD_HEIGHT', WORLD_HEIGHT],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1 || value > MAX_WORLD_DIMENSION) {
+      throw new RangeError(
+        `${name}=${value} is not a valid world dimension: it must be an integer ` +
+          `between 1 and ${MAX_WORLD_DIMENSION}, because coordinates are uint16 on the wire.`,
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  assertWorldFitsTheWireFormat();
+
   // Open the database first: the world starts from whatever state it holds.
   const db = openDb(WORLD_DB);
   const world = new World(WORLD_WIDTH, WORLD_HEIGHT, WORLD_SEED, db);
