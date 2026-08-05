@@ -19,6 +19,10 @@
  *  - the binary encoding of a realistic full snapshot and a realistic delta
  *    is less than half the size of the same data as JSON — the whole point
  *    of the format
+ *  - the fields that count upward forever (tick, entity id) survive values
+ *    no uint16 could hold, and coordinates still throw when out of range.
+ *    A uint16 tick froze production after 1h49m of uptime; entity ids were
+ *    the same bug about 8 days out
  *
  * The websocket gates (a binary-capable client receiving binary frames, a
  * plain client still getting JSON) are covered by manual playtesting with
@@ -396,11 +400,71 @@ function sizeTests(): void {
   assert(emptyBinary.length < emptyJson.length, 'even an empty snapshot is smaller in binary');
 }
 
+/**
+ * Regression: the fields that count upward forever must survive values a
+ * uint16 cannot hold.
+ *
+ * A uint16 tick froze production after 1h49m — the server kept ticking while
+ * every snapshot threw on encode, so clients silently stopped updating. Entity
+ * ids are the same shape of bug but worse: they are restored as MAX(id)+1, so
+ * a restart does not clear them.
+ */
+function overflowTests(): void {
+  console.log('overflow: fields that grow without bound');
+
+  // One full day of uptime at 10Hz, well past the old uint16 ceiling.
+  const aDayOfTicks = 24 * 60 * 60 * 10;
+  assert(aDayOfTicks > 0xffff, 'a day of ticks really does exceed a uint16');
+
+  const full: FullSnapshot = {
+    t: 'full',
+    tick: aDayOfTicks,
+    entities: [{ id: 70_000, kind: 'player', x: 1, y: 2, components: {} }],
+    tiles: [],
+    playerX: 1,
+    playerY: 2,
+  };
+  const decodedFull = decodeServerMessage(encodeServerMessage(full)) as FullSnapshot;
+  assert(decodedFull.tick === aDayOfTicks, `full snapshot survives tick ${aDayOfTicks}`);
+  assert(decodedFull.entities[0].id === 70_000, 'full snapshot survives an entity id past uint16');
+
+  const delta: DeltaSnapshot = {
+    t: 'delta',
+    tick: 4_000_000_000,
+    entities: [{ id: 4_000_000_001, kind: 'npc', x: 3, y: 4, components: {} }],
+    removedEntities: [4_000_000_002],
+    tiles: [],
+    removedTiles: [],
+    playerX: 3,
+    playerY: 4,
+  };
+  const decodedDelta = decodeServerMessage(encodeServerMessage(delta)) as DeltaSnapshot;
+  assert(decodedDelta.tick === 4_000_000_000, 'delta survives a tick near the uint32 ceiling');
+  assert(decodedDelta.entities[0].id === 4_000_000_001, 'delta survives a huge entity id');
+  assert(decodedDelta.removedEntities[0] === 4_000_000_002, 'removedEntities ids are not truncated');
+
+  const welcome = decodeServerMessage(
+    encodeServerMessage({ t: 'welcome', entityId: 3_000_000_000, color: '#fff' }),
+  ) as { entityId: number };
+  assert(welcome.entityId === 3_000_000_000, 'welcome survives a huge entity id');
+
+  // The guarantee that keeps coordinates at uint16: out-of-range still throws
+  // loudly rather than wrapping into a wrong tile.
+  let threw = false;
+  try {
+    encodeServerMessage({ ...full, playerX: 70_000 });
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'a coordinate past uint16 still throws instead of silently wrapping');
+}
+
 function main(): void {
   console.log('Binary protocol tests');
   roundTripTests();
   dispatchTests();
   sizeTests();
+  overflowTests();
   console.log(
     failures === 0 ? '\nALL BINARY PROTOCOL TESTS PASSED' : `\n${failures} FAILURE(S) — see above`,
   );
