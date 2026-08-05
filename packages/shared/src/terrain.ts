@@ -90,10 +90,18 @@ export const TILE_NAMES: Record<number, string> = {
 
 /** World tile edge in pixels. */
 export const TILE_SIZE = 32;
-/** Tiles visible either side of the player, horizontally. */
-export const VIEW_RADIUS_X = 30;
-/** Tiles visible above and below the player. */
-export const VIEW_RADIUS_Y = 20;
+/**
+ * Tiles the server sends either side of the player. This is deliberately
+ * WIDER than the canvas shows: the surplus is what the camera pans into.
+ * Without a margin the camera could only look at ground the client was
+ * never sent, which renders as fallback grass.
+ */
+export const VIEW_RADIUS_X = 36;
+export const VIEW_RADIUS_Y = 26;
+
+/** Tiles the canvas actually displays either side of centre. */
+export const VISIBLE_RADIUS_X = 27;
+export const VISIBLE_RADIUS_Y = 17;
 
 /**
  * Tiles the renderer samples beyond the visible edge. The marching-squares
@@ -107,5 +115,17 @@ export const VIEW_HALO = 3;
  * The viewport is capped here rather than filling the window: beyond this
  * the client would be drawing ground it was never told about.
  */
-export const MAX_VIEW_WIDTH = (2 * (VIEW_RADIUS_X - VIEW_HALO) + 1) * TILE_SIZE;
-export const MAX_VIEW_HEIGHT = (2 * (VIEW_RADIUS_Y - VIEW_HALO) + 1) * TILE_SIZE;
+export const MAX_VIEW_WIDTH = (2 * VISIBLE_RADIUS_X + 1) * TILE_SIZE;
+export const MAX_VIEW_HEIGHT = (2 * VISIBLE_RADIUS_Y + 1) * TILE_SIZE;
+
+/**
+ * How far free-look may move the view off the player, in TILES. The server
+ * centres snapshots on the reported camera and clamps to this same number,
+ * so it is a gameplay limit (how far you may peek) rather than a rendering
+ * one. The server's radius only has to exceed the visible radius by enough
+ * to absorb the lag between the client moving its camera and the next
+ * snapshot arriving.
+ */
+export const MAX_VIEW_OFFSET = 10;
+export const MAX_PAN_X = MAX_VIEW_OFFSET * TILE_SIZE;
+export const MAX_PAN_Y = MAX_VIEW_OFFSET * TILE_SIZE;

@@ -35,7 +35,13 @@ export interface TickLoopOptions {
    * that player's snapshot (a full view on connect, deltas afterwards — see
    * snapshot.ts).
    */
-  broadcast: (buildPlayerSnapshot: (entityId: number, sessionId: string) => ServerMessage) => void;
+  broadcast: (
+    buildPlayerSnapshot: (
+      entityId: number,
+      sessionId: string,
+      view?: { x: number; y: number },
+    ) => ServerMessage,
+  ) => void;
   /** Where dirty world state is persisted; flushed every 50 ticks (5s at 10Hz). */
   db: DatabaseSync;
   /**
@@ -167,7 +173,7 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
     //    snapshot per session is a full view; later ones are per-session
     //    deltas computed by the diff engine in snapshot.ts.
     const disabledFeatures = options.disabledFeatures?.() ?? [];
-    options.broadcast((entityId, sessionId) => {
+    options.broadcast((entityId, sessionId, view) => {
       const entity = world.get(entityId);
       if (!entity) {
         // Despawned mid-tick: reset the session's diff state so the next
@@ -176,7 +182,7 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
         forgetSession(sessionId);
         return emptySnapshot(tickNumber);
       }
-      return buildSnapshot(world, entity, tickNumber, disabledFeatures, sessionId);
+      return buildSnapshot(world, entity, tickNumber, disabledFeatures, sessionId, view);
     });
 
     // 4. Persist dirty world state every 50 ticks. SIGKILL can't be caught,

@@ -6,8 +6,8 @@ import {
   encodeServerMessage,
   INVENTORY_CAPACITY,
   TILE_SIZE,
-  VIEW_RADIUS_X,
-  VIEW_RADIUS_Y,
+  VISIBLE_RADIUS_X,
+  VISIBLE_RADIUS_Y,
   type Intent,
   type Pong,
   type RecipeDef,
@@ -25,7 +25,13 @@ export interface WsServer {
    * player's view. The callback receives the session's entity id and its
    * session id (which the snapshot diff engine keys per-session state on).
    */
-  broadcast(buildPlayerSnapshot: (entityId: number, sessionId: string) => ServerMessage): void;
+  broadcast(
+    buildPlayerSnapshot: (
+      entityId: number,
+      sessionId: string,
+      view?: { x: number; y: number },
+    ) => ServerMessage,
+  ): void;
   /** Number of connected sessions; read once per tick by the profiler. */
   sessionCount(): number;
   close(): void;
@@ -50,6 +56,14 @@ interface Session {
   socket: WebSocket;
   entityId: number;
   color: string;
+  /**
+   * Where this client's camera is looking, in world tiles, or undefined
+   * before it reports. Snapshots are centred here rather than on the player:
+   * the camera trails on a rubber band and can be panned with free-look, so
+   * the tiles the client renders are not the tiles centred on the entity.
+   */
+  viewX?: number;
+  viewY?: number;
   /**
    * Compact binary wire format (packages/shared/src/binary.ts): true once the
    * client asks for it via `{ t: 'binary', enabled: true }`. Sessions that
@@ -84,6 +98,18 @@ function isIntent(value: unknown): value is Intent {
  * latency. Pings never touch the intent queue; we echo the client's
  * timestamp back verbatim.
  */
+function isView(value: unknown): value is { t: 'view'; x: number; y: number } {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.t === 'view' &&
+    typeof obj.x === 'number' &&
+    typeof obj.y === 'number' &&
+    Number.isFinite(obj.x) &&
+    Number.isFinite(obj.y)
+  );
+}
+
 function isPing(value: unknown): value is { t: 'ping'; ts: number } {
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
@@ -164,8 +190,11 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
         color: session.color,
         // The server decides how much world it sends; the client caps its
         // canvas to this so it never renders ground it was not given.
-        viewRadiusX: VIEW_RADIUS_X,
-        viewRadiusY: VIEW_RADIUS_Y,
+        // The DISPLAYABLE radius, not the send radius: the server sends a
+        // wider window so the camera has somewhere to pan into, but the
+        // client must only render this much (equal view for every monitor).
+        viewRadiusX: VISIBLE_RADIUS_X,
+        viewRadiusY: VISIBLE_RADIUS_Y,
         tileSize: TILE_SIZE,
       } satisfies WelcomeMessage),
     );
@@ -184,6 +213,13 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
         message = JSON.parse(data.toString());
       } catch {
         console.warn(`[ws] session ${session.id} sent non-JSON data - dropped`);
+        return;
+      }
+      // Camera position. Clamped server-side in snapshot.ts, so a forged
+      // value cannot scout the map — it is a hint, not an instruction.
+      if (isView(message)) {
+        session.viewX = message.x;
+        session.viewY = message.y;
         return;
       }
       if (isPing(message)) {
@@ -227,7 +263,13 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
   });
 
   return {
-    broadcast(buildPlayerSnapshot: (entityId: number, sessionId: string) => ServerMessage): void {
+    broadcast(
+      buildPlayerSnapshot: (
+        entityId: number,
+        sessionId: string,
+        view?: { x: number; y: number },
+      ) => ServerMessage,
+    ): void {
       for (const session of sessions.values()) {
         if (session.socket.readyState !== WebSocket.OPEN) continue;
         try {
@@ -235,7 +277,13 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
           // everyone else keeps JSON. Encoding can throw (a value outgrew
           // its uint16 field) — caught here so one bad session never kills
           // the broadcast loop.
-          const snapshot = buildPlayerSnapshot(session.entityId, session.id);
+          // Centre this session's snapshot on ITS camera, not its player:
+          // the camera trails and can be panned, so the two differ.
+          const view =
+            session.viewX !== undefined && session.viewY !== undefined
+              ? { x: session.viewX, y: session.viewY }
+              : undefined;
+          const snapshot = buildPlayerSnapshot(session.entityId, session.id, view);
           const data = session.useBinary ? encodeServerMessage(snapshot) : JSON.stringify(snapshot);
           options.onSnapshot?.(snapshot, data);
           session.socket.send(data);

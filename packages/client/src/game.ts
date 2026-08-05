@@ -1,6 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { DeltaSnapshot, EntityState, FullSnapshot, TileState } from '@game/shared';
-import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, VIEW_HALO } from '@game/shared';
+import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, TILE_SIZE } from '@game/shared';
 import { Camera } from './camera.ts';
 import { EntityRenderer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
@@ -176,8 +176,10 @@ export class Game {
      */
     game.setViewLimits = (radiusX: number, radiusY: number, tileSize: number): void => {
       if (!(radiusX > 0) || !(radiusY > 0) || !(tileSize > 0)) return;
-      maxW = (2 * (radiusX - VIEW_HALO) + 1) * tileSize;
-      maxH = (2 * (radiusY - VIEW_HALO) + 1) * tileSize;
+      // radiusX/Y are the DISPLAYABLE radii the server declares; the window
+      // it actually sends is wider, to give the camera room to pan.
+      maxW = (2 * radiusX + 1) * tileSize;
+      maxH = (2 * radiusY + 1) * tileSize;
       const { w, h } = viewportSize();
       app.renderer.resize(w, h);
     };
@@ -198,18 +200,21 @@ export class Game {
     const latest = this.buffer[this.buffer.length - 1];
     if (!latest) return;
 
-    // The tile base follows the camera centre from the previous frame's
-    // entity positions (rebuild runs before positions update below).
     const viewW = this.app.renderer.width / this.app.renderer.resolution;
     const viewH = this.app.renderer.height / this.app.renderer.resolution;
-    const centre = this.renderer.tileCenter(this.localEntityId);
-    this.tilemap.rebuild(
-      this.knownTiles,
-      centre ? centre.x : 0,
-      centre ? centre.y : 0,
-      viewW,
-      viewH,
-    );
+
+    // Advance the camera BEFORE drawing, and draw the tilemap around the
+    // CAMERA centre rather than the player.
+    //
+    // These were the same point while the player was pinned dead centre, so
+    // drawing around the player worked by coincidence. The moment the camera
+    // can sit anywhere else — trailing behind on a rubber band, or panned
+    // away by free-look — the drawn rectangle stops covering the visible one
+    // and the uncovered strip renders as black bands along the edges.
+    this.camera.setViewport(viewW, viewH);
+    this.camera.follow(this.renderer.tileCenter(this.localEntityId));
+    this.camera.update(this.app.ticker.deltaMS / 1000);
+    this.tilemap.rebuild(this.knownTiles, this.camera.centreX, this.camera.centreY, viewW, viewH);
 
     // Render ~1 tick behind: when the newest snapshot arrives we are at the
     // previous one (alpha 0) and ease toward it over the next tick interval.
@@ -247,12 +252,35 @@ export class Game {
     // Phase 7: health bars above damaged entities.
     this.renderer.updateHealthBars(latest.snapshot);
 
-    // Keep the local player centred; the camera follows the just-updated
-    // entity positions and the whole world layer gets the offset applied.
-    this.camera.setViewport(viewW, viewH);
-    this.camera.follow(this.renderer.tileCenter(this.localEntityId));
-    this.camera.update();
+    // The camera advanced at the top of the frame (the tilemap is drawn
+    // around it); apply its offset to the whole world layer.
     this.worldLayer.position.set(-this.camera.x, -this.camera.y);
+  }
+
+  /**
+   * The camera centre in world TILES. The client reports this so the server
+   * can centre its snapshot on what is actually being looked at rather than
+   * on the player, who the camera is deliberately not welded to.
+   */
+  viewTile(): { x: number; y: number } {
+    // Manual rounding: `Math` is banned by lint (it would hide Math.random,
+    // which breaks seeded reproducibility). Half-away-from-zero, so this
+    // stays correct if a wrapped camera centre goes briefly negative.
+    const round = (v: number): number => (v >= 0 ? (v + 0.5) | 0 : -((-v + 0.5) | 0));
+    return {
+      x: round(this.camera.centreX / TILE_SIZE - 0.5),
+      y: round(this.camera.centreY / TILE_SIZE - 0.5),
+    };
+  }
+
+  /** Free-look: nudge the view off the player, in world pixels. */
+  panCamera(dx: number, dy: number): void {
+    this.camera.pan(dx, dy);
+  }
+
+  /** Free-look: drop the offset so the view eases back onto the player. */
+  recentreCamera(): void {
+    this.camera.recentre();
   }
 
   /** Feed the latest authoritative snapshot (full or delta) from the server. */

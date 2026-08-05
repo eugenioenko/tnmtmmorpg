@@ -3,6 +3,21 @@ import type { Intent } from './intents.ts';
 import type { RecipeDef } from './items.ts';
 
 /** Sent once on connect so the client can identify its own entity. */
+/**
+ * The client telling the server where its camera is pointed, in world tiles.
+ *
+ * The camera is not welded to the player — it trails on a rubber band and can
+ * be panned with free-look — so the tiles the client RENDERS are not
+ * necessarily the tiles centred on the player. The server centres each
+ * snapshot here instead, clamped to MAX_VIEW_OFFSET tiles from the player so
+ * a forged client cannot scout the map from safety.
+ */
+export interface ViewMessage {
+  t: 'view';
+  x: number;
+  y: number;
+}
+
 export interface WelcomeMessage {
   t: 'welcome';
   entityId: number;

@@ -22,6 +22,7 @@ import type {
   TileState,
   WorldCoord,
 } from '@game/shared';
+import { MAX_VIEW_OFFSET } from '@game/shared';
 import {
   VIEW_RADIUS_X,
   VIEW_RADIUS_Y,
@@ -55,13 +56,33 @@ export function forgetSession(sessionId: string): void {
   sessions.delete(sessionId);
 }
 
-/** The clamped tile viewport around a player (world edges included). */
-function viewportOf(entity: Entity): Viewport {
+/**
+ * The tile viewport for a session, centred on its CAMERA rather than its
+ * player.
+ *
+ * The client's camera is deliberately not welded to the entity: it trails on
+ * a rubber band and can be panned with free-look. Centring the snapshot on
+ * the entity therefore sends the wrong tiles the moment the camera moves —
+ * the client renders ground it was never given, which falls back to grass
+ * and then snaps to real terrain, the flicker along the moving edge.
+ *
+ * The reported centre is clamped to MAX_VIEW_OFFSET tiles from the player,
+ * so a forged client gains at most a short peek, never free reconnaissance.
+ */
+function viewportOf(entity: Entity, view?: { x: number; y: number }): Viewport {
+  let cx = entity.x;
+  let cy = entity.y;
+  if (view) {
+    const dx = view.x - entity.x;
+    const dy = view.y - entity.y;
+    cx = entity.x + (dx < -MAX_VIEW_OFFSET ? -MAX_VIEW_OFFSET : dx > MAX_VIEW_OFFSET ? MAX_VIEW_OFFSET : dx);
+    cy = entity.y + (dy < -MAX_VIEW_OFFSET ? -MAX_VIEW_OFFSET : dy > MAX_VIEW_OFFSET ? MAX_VIEW_OFFSET : dy);
+  }
   return {
-    minX: entity.x - VIEW_RADIUS_X,
-    minY: entity.y - VIEW_RADIUS_Y,
-    maxX: entity.x + VIEW_RADIUS_X,
-    maxY: entity.y + VIEW_RADIUS_Y,
+    minX: cx - VIEW_RADIUS_X,
+    minY: cy - VIEW_RADIUS_Y,
+    maxX: cx + VIEW_RADIUS_X,
+    maxY: cy + VIEW_RADIUS_Y,
   };
 }
 
@@ -89,11 +110,15 @@ function scanTiles(world: World, vp: Viewport): { tiles: TileState[]; byKey: Map
 
 /** Every entity inside the player's exact tile viewport. */
 function entitiesInViewport(world: World, entity: Entity, vp: Viewport): EntityState[] {
+  // Centre the chunk scan on the VIEWPORT, not the entity: with the camera
+  // panned away, entities near the view edge live in chunks the player's own
+  // chunk ring does not reach.
+  void entity;
   // Scan the chunk range covering the viewport; entity coordinates are
   // already wrapped (moveEntity normalises them), so the spatial-index
   // ring around the player's chunk catches everything nearby, including
   // entities that just wrapped across an edge.
-  const chunk = worldToChunk(entity.x, entity.y);
+  const chunk = worldToChunk((vp.minX + vp.maxX) >> 1, (vp.minY + vp.maxY) >> 1);
   return world
     .entitiesInView(chunk.cx, chunk.cy, VIEW_RADIUS_X, VIEW_RADIUS_Y)
     .filter((e) => e.x >= vp.minX && e.x <= vp.maxX && e.y >= vp.minY && e.y <= vp.maxY)
@@ -118,8 +143,9 @@ export function buildSnapshot(
   tick: number,
   disabledFeatures: string[],
   sessionId: string,
+  view?: { x: number; y: number },
 ): FullSnapshot | DeltaSnapshot {
-  const vp = viewportOf(entity);
+  const vp = viewportOf(entity, view);
   const entities = entitiesInViewport(world, entity, vp);
   const entityIds = new Set(entities.map((e) => e.id));
   const { tiles: tileList, byKey: tileMap } = scanTiles(world, vp);

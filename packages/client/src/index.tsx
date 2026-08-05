@@ -49,6 +49,26 @@ const WASD_TO_DIR: Record<string, Direction> = {
 /** Tiles per WASD press. The server caps this at MAX_MOVE_DIST. */
 const STRIDE = 100;
 
+/**
+ * IJKL pans the camera without moving the player — the view is not welded
+ * to the character. The range is clamped to the margin the server sends
+ * beyond the visible area, so free-look can never show ground the client
+ * was not given. 'o' snaps the view back onto the player.
+ */
+const PAN_KEYS: Record<string, { x: number; y: number }> = {
+  i: { x: 0, y: -1 },
+  k: { x: 0, y: 1 },
+  j: { x: -1, y: 0 },
+  l: { x: 1, y: 0 },
+  I: { x: 0, y: -1 },
+  K: { x: 0, y: 1 },
+  J: { x: -1, y: 0 },
+  L: { x: 1, y: 0 },
+};
+
+/** World pixels per pan keypress. */
+const PAN_STEP = 64;
+
 function isFullSnapshot(value: unknown): value is FullSnapshot {
   if (typeof value !== 'object' || value === null) return false;
   const msg = value as Record<string, unknown>;
@@ -272,6 +292,27 @@ async function main(): Promise<void> {
     });
   }
 
+  /**
+   * Tell the server where the camera is looking, whenever that tile changes.
+   * The camera trails the player and can be panned with free-look, so the
+   * server cannot infer the view from the entity's position — without this
+   * it sends tiles centred on the player and the client renders ground it
+   * was never given (which falls back to grass, then snaps: the edge
+   * flicker). Only fires on change, so a stationary camera costs nothing.
+   */
+  function startViewReports(): void {
+    let lastX: number | null = null;
+    let lastY: number | null = null;
+    window.setInterval(() => {
+      if (!game || !socket || socket.readyState !== WebSocket.OPEN) return;
+      const { x, y } = game.viewTile();
+      if (x === lastX && y === lastY) return;
+      lastX = x;
+      lastY = y;
+      socket.send(JSON.stringify({ t: 'view', x, y }));
+    }, 50);
+  }
+
   function startPing(): void {
     window.setInterval(() => {
       if (socket && socket.readyState === WebSocket.OPEN) {
@@ -297,6 +338,19 @@ async function main(): Promise<void> {
       window.dispatchEvent(new Event(INVENTORY_TOGGLE_EVENT));
       return;
     }
+    // Free-look first: these never reach the movement handler.
+    const pan = PAN_KEYS[event.key];
+    if (pan) {
+      event.preventDefault();
+      game.panCamera(pan.x * PAN_STEP, pan.y * PAN_STEP);
+      return;
+    }
+    if (event.key === 'o' || event.key === 'O') {
+      event.preventDefault();
+      game.recentreCamera();
+      return;
+    }
+
     const step = ARROW_TO_DIR[event.key];
     if (step) {
       event.preventDefault();
@@ -311,6 +365,7 @@ async function main(): Promise<void> {
   });
 
   startPing();
+  startViewReports();
 }
 
 main();
