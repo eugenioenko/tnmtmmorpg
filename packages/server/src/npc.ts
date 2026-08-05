@@ -49,22 +49,20 @@ export function spawnNPC(world: World, kind: string, x: number, y: number, ai: s
 
 /**
  * Scatter `count` wandering NPCs on random walkable tiles inside the spawn
- * box near the origin (players spawn there, so the world reads alive from
- * the first moment). Seeded via world.rng(), so a given world seed always
- * scatters the same population. Returns how many actually spawned (a tiny
- * world may leave fewer room).
+ * box at the centre of the world (players spawn there too). Seeded via
+ * world.rng(), so a given world seed always scatters the same population.
+ * Returns how many actually spawned.
  */
 export function scatterNPCs(world: World, count: number, area: number = 20): number {
-  let span = area;
-  if (world.width - 2 < span) span = world.width - 2;
-  if (world.height - 2 < span) span = world.height - 2;
-  if (span < 1) span = 1;
+  const cx = (world.width / 2) | 0;
+  const cy = (world.height / 2) | 0;
+  const half = (area / 2) | 0;
 
   let spawned = 0;
   for (let i = 0; i < count; i++) {
     for (let attempt = 0; attempt < 50; attempt++) {
-      const x = 1 + ~~(world.rng() * span);
-      const y = 1 + ~~(world.rng() * span);
+      const x = cx - half + ~~(world.rng() * area);
+      const y = cy - half + ~~(world.rng() * area);
       if (!world.isWalkable(x, y)) continue;
       const occupied = world.all().some((e) => e.x === x && e.y === y);
       if (occupied) continue;

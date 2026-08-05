@@ -100,25 +100,26 @@ function isBinaryRequest(value: unknown): value is { t: 'binary'; enabled: boole
 }
 
 /**
- * Players spawn inside a small box near the world origin: inside the reset
- * tool's pre-generated scatter area, and close enough to see one another's
- * activity (the world itself is 10000x10000, but every player starts here).
+	 * Players spawn in a small box at the centre of the world: close enough to
+	 * see one another's activity (the world itself is 10000×10000, but every
+	 * player starts here).
  */
 const SPAWN_AREA = 20;
 
 /** A random walkable tile not already occupied by another player. */
 function findSpawn(world: World): WorldCoord {
   const players = world.query('player');
-  const spanX = world.width <= SPAWN_AREA + 2 ? world.width - 2 : SPAWN_AREA;
-  const spanY = world.height <= SPAWN_AREA + 2 ? world.height - 2 : SPAWN_AREA;
+  const cx = (world.width / 2) | 0;
+  const cy = (world.height / 2) | 0;
+  const half = (SPAWN_AREA / 2) | 0;
   for (let attempt = 0; attempt < 100; attempt++) {
-    const x = 1 + ~~(world.rng() * spanX);
-    const y = 1 + ~~(world.rng() * spanY);
+    const x = cx - half + ~~(world.rng() * SPAWN_AREA);
+    const y = cy - half + ~~(world.rng() * SPAWN_AREA);
     const free = !players.some((p) => p.x === x && p.y === y);
     if (free && world.isWalkable(x, y)) return { x, y };
   }
-  return { x: 1, y: 1 }; // last resort; the corner inside the walls
-}
+  return { x: cx, y: cy }; // last resort — world centre
+  }
 
 export function startWsServer(world: World, options: WsServerOptions): WsServer {
   const httpServer = createServer((_req, res) => {
