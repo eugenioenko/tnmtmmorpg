@@ -116,19 +116,6 @@ function hasNonGrass(data: Uint8Array): boolean {
 }
 
 /**
- * Deterministic per-chunk LCG from (seed, cx, cy) — the path generator's
- * random source. Worlds stay reproducible from the seed: no Math.random
- * anywhere, every bit of randomness flows through integer hashing.
- */
-function chunkRng(seed: number, cx: number, cy: number): () => number {
-  let state = (seed ^ (cx * 374761393 + cy * 668265263)) >>> 0 || 1;
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 2 ** 32;
-  };
-}
-
-/**
  * Smoothing pass: a land tile whose neighbors are mostly a different kind
  * switches to match them, wiping single-tile noise so biomes read as clean
  * regions. A strict majority (half + 1 of the available in-chunk neighbors)
@@ -233,47 +220,92 @@ function fillSmallWater(data: Uint8Array): void {
   }
 }
 
-/** Clamp a road control point back into the chunk (roads stay in-chunk). */
-function clampChunk(v: number): number {
-  return v < 0 ? 0 : v > CHUNK_SIZE - 1 ? CHUNK_SIZE - 1 : v;
+/** Integer hash of (seed, x, y) -> uint32. Global, chunk-independent. */
+function hash2(seed: number, x: number, y: number): number {
+  let h = ((seed + x * 374761393 + y * 668265263) | 0) >>> 0;
+  h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0;
 }
 
-/** Pave one tile as dirt road — walkable land only, never water or mountains. */
-function paveTile(data: Uint8Array, x: number, y: number): void {
-  const kind = data[y * CHUNK_SIZE + x];
-  if (kind !== TILE_WATER && kind !== TILE_MOUNTAIN) data[y * CHUNK_SIZE + x] = TILE_DIRT;
+/** Floor division that behaves for negative operands (no Math). */
+function floorDiv(a: number, b: number): number {
+  const q = (a / b) | 0;
+  return a % b !== 0 && a < 0 !== b < 0 ? q - 1 : q;
 }
 
 /**
- * Bresenham line from a to b, paving each tile along it. Roads are 1-2
- * tiles wide: roughly a third of the steps also pave a random adjacent tile.
+ * Roads connect settlements on a GLOBAL lattice, not per chunk.
+ *
+ * Every lattice cell (gx, gy) owns one settlement whose position comes from
+ * hashing the cell, so any chunk that needs it derives the identical world
+ * coordinate. Each settlement links to its east and south neighbours, giving
+ * one connected network spanning the map. A chunk draws every segment that
+ * crosses it and clips the rest, so roads continue seamlessly over chunk
+ * borders -- the previous generator clamped control points into the chunk,
+ * so every 64x64 tile got its own isolated squiggle that dead-ended at the
+ * seam.
  */
-function bresenhamRoad(
+const ROAD_SPACING = 110;
+/** Max offset of a settlement from its lattice point, in tiles. */
+const ROAD_JITTER = 32;
+
+/** World-space position of the settlement owned by lattice cell (gx, gy). */
+function settlementAt(seed: number, gx: number, gy: number): { x: number; y: number } {
+  const h = hash2(seed + 99991, gx, gy);
+  const span = ROAD_JITTER * 2 + 1;
+  return {
+    x: gx * ROAD_SPACING + (h % span) - ROAD_JITTER,
+    y: gy * ROAD_SPACING + (((h / span) | 0) % span) - ROAD_JITTER,
+  };
+}
+
+/**
+ * Pave one WORLD tile as dirt, clipped to this chunk. Walkable land only, so
+ * roads skirt lakes and mountains rather than cutting through them.
+ */
+function paveWorld(
   data: Uint8Array,
-  rng: () => number,
-  a: { x: number; y: number },
-  b: { x: number; y: number },
+  originX: number,
+  originY: number,
+  wx: number,
+  wy: number,
 ): void {
-  let x = a.x;
-  let y = a.y;
-  const tx = b.x;
-  const ty = b.y;
-  const dx = tx - x < 0 ? -(tx - x) : tx - x;
-  const dy = ty - y < 0 ? -(ty - y) : ty - y;
-  const sx = x < tx ? 1 : -1;
-  const sy = y < ty ? 1 : -1;
+  const lx = wx - originX;
+  const ly = wy - originY;
+  if (lx < 0 || ly < 0 || lx >= CHUNK_SIZE || ly >= CHUNK_SIZE) return;
+  const idx = ly * CHUNK_SIZE + lx;
+  const kind = data[idx];
+  if (kind !== TILE_WATER && kind !== TILE_MOUNTAIN) data[idx] = TILE_DIRT;
+}
+
+/**
+ * Bresenham in WORLD coordinates, paving each tile and clipping to the
+ * chunk. Widening is a pure function of world position (never a per-chunk
+ * RNG), so two chunks drawing the same segment agree exactly on the seam.
+ */
+function roadSegment(
+  data: Uint8Array,
+  originX: number,
+  originY: number,
+  seed: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): void {
+  let x = ax;
+  let y = ay;
+  const dx = bx - x < 0 ? -(bx - x) : bx - x;
+  const dy = by - y < 0 ? -(by - y) : by - y;
+  const sx = x < bx ? 1 : -1;
+  const sy = y < by ? 1 : -1;
   let err = dx - dy;
-  while (true) {
-    paveTile(data, x, y);
-    if (x === tx && y === ty) break;
-    if (rng() < 0.35) {
-      const dir = (rng() * 4) | 0;
-      const sideX = x + (dir === 0 ? 1 : dir === 1 ? -1 : 0);
-      const sideY = y + (dir === 2 ? 1 : dir === 3 ? -1 : 0);
-      if (sideX >= 0 && sideX < CHUNK_SIZE && sideY >= 0 && sideY < CHUNK_SIZE) {
-        paveTile(data, sideX, sideY);
-      }
-    }
+  let guard = 0;
+  while (guard++ < 4096) {
+    paveWorld(data, originX, originY, x, y);
+    // Widen to 2 tiles on roughly half the steps, deterministically.
+    if (hash2(seed, x, y) % 100 < 55) paveWorld(data, originX, originY, x, y + 1);
+    if (x === bx && y === by) break;
     const e2 = 2 * err;
     if (e2 > -dy) {
       err -= dy;
@@ -286,58 +318,38 @@ function bresenhamRoad(
   }
 }
 
-/**
- * One road between two settlements: a straight-ish polyline with 1-2 bend
- * points jittered off the direct line, drawn with Bresenham. Roads only
- * pave walkable land, so they skirt lakes and mountains instead of cutting
- * through them.
- */
-function drawRoadBetween(
+/** One road between two settlements: two Bresenham legs via a hashed bend. */
+function roadBetween(
   data: Uint8Array,
-  rng: () => number,
+  originX: number,
+  originY: number,
+  seed: number,
   a: { x: number; y: number },
   b: { x: number; y: number },
 ): void {
-  const bends = 1 + ((rng() * 2) | 0);
-  const points: { x: number; y: number }[] = [{ x: a.x, y: a.y }];
-  for (let i = 1; i <= bends; i++) {
-    const t = i / (bends + 1);
-    const px = a.x + (b.x - a.x) * t;
-    const py = a.y + (b.y - a.y) * t;
-    const jitter = 4;
-    points.push({
-      x: clampChunk((px + rng() * jitter * 2 - jitter + 0.5) | 0),
-      y: clampChunk((py + rng() * jitter * 2 - jitter + 0.5) | 0),
-    });
-  }
-  points.push({ x: b.x, y: b.y });
-  for (let i = 0; i + 1 < points.length; i++) {
-    bresenhamRoad(data, rng, points[i], points[i + 1]);
-  }
+  const h = hash2(seed + 4242, a.x + b.x, a.y + b.y);
+  const bend = 30;
+  const span = bend * 2 + 1;
+  const mx = (((a.x + b.x) / 2) | 0) + (h % span) - bend;
+  const my = (((a.y + b.y) / 2) | 0) + (((h / span) | 0) % span) - bend;
+  roadSegment(data, originX, originY, seed, a.x, a.y, mx, my);
+  roadSegment(data, originX, originY, seed, mx, my, b.x, b.y);
 }
 
-/**
- * Dirt roads: every chunk picks 3-5 "settlement" points on walkable land
- * (seeded per chunk) and connects consecutive pairs with a dirt road, giving
- * the world a lived-in feel. Deterministic per chunk — the same seed always
- * draws the same roads.
- */
+/** Draw every lattice road segment that crosses this chunk. */
 function drawRoads(seed: number, cx: number, cy: number, data: Uint8Array): void {
-  const rng = chunkRng(seed, cx, cy);
-  const settlements: { x: number; y: number }[] = [];
-  const count = 3 + ((rng() * 3) | 0); // 3-5 settlements
-  for (let i = 0; i < count; i++) {
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const x = (rng() * CHUNK_SIZE) | 0;
-      const y = (rng() * CHUNK_SIZE) | 0;
-      const kind = data[y * CHUNK_SIZE + x];
-      if (kind === TILE_WATER || kind === TILE_MOUNTAIN) continue;
-      settlements.push({ x, y });
-      break;
+  const originX = cx * CHUNK_SIZE;
+  const originY = cy * CHUNK_SIZE;
+  const g0x = floorDiv(originX, ROAD_SPACING) - 1;
+  const g1x = floorDiv(originX + CHUNK_SIZE, ROAD_SPACING) + 1;
+  const g0y = floorDiv(originY, ROAD_SPACING) - 1;
+  const g1y = floorDiv(originY + CHUNK_SIZE, ROAD_SPACING) + 1;
+  for (let gy = g0y; gy <= g1y; gy++) {
+    for (let gx = g0x; gx <= g1x; gx++) {
+      const here = settlementAt(seed, gx, gy);
+      roadBetween(data, originX, originY, seed, here, settlementAt(seed, gx + 1, gy));
+      roadBetween(data, originX, originY, seed, here, settlementAt(seed, gx, gy + 1));
     }
-  }
-  for (let i = 0; i + 1 < settlements.length; i++) {
-    drawRoadBetween(data, rng, settlements[i], settlements[i + 1]);
   }
 }
 
@@ -362,51 +374,50 @@ export function generateChunk(
 ): Uint8Array {
   const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
-  // North pole: the top rows of the map are always snow — a small guaranteed
-  // polar cap, so the world reads "frozen north" even where the noise dips.
-  const poleRows = (worldHeight / 200) | 0;
-  const POLE_ROWS = poleRows < 2 ? 2 : poleRows;
-
   for (let ly = 0; ly < CHUNK_SIZE; ly++) {
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       const wx = cx * CHUNK_SIZE + lx;
       const wy = cy * CHUNK_SIZE + ly;
 
-      // Larger features: lower frequency multipliers produce continent-scale
-      // terrain instead of scattered noise ponds; fewer octaves soften it.
-      // Elevation drives oceans, landmass and mountains; moisture separates
-      // forest/swamp from scrubland and desert.
+      // Larger features: these frequencies give ~50-tile landmasses and
+      // water bodies. Much lower and a whole viewport falls inside a single
+      // noise cell, which makes every screen one flat biome.
       const elevation = fbm(seed, wx * 0.02, wy * 0.02, 3);
       const moisture = fbm(seed + 5000, wx * 0.015, wy * 0.015, 3);
 
-      // Latitude temperature (north=cold, south=hot)
-      const lat = 1 - wy / (worldHeight - 1); // 1 at top, 0 at bottom
-      const tempVar = fbm(seed + 10000, wx * 0.01, wy * 0.01, 2) * 0.2;
-      const temperature = lat * 1.0 + tempVar;
+      // Climate runs on a DIAGONAL axis rather than latitude alone, so the
+      // cold and hot extremes sit in known corners instead of wherever the
+      // noise happens to land: 1 at the top-right (polar), 0 at the
+      // bottom-left (desert). The noise term only wobbles the frontier so it
+      // reads as natural rather than a ruler-straight line. The world centre
+      // lands at ~0.5 -- squarely inside the temperate buffer, which is
+      // where players spawn.
+      const nx = wx / (worldWidth - 1);
+      const ny = 1 - wy / (worldHeight - 1);
+      const climate = (nx + ny) / 2 + (fbm(seed + 20000, wx * 0.008, wy * 0.008, 2) - 0.5) * 0.22;
 
       let kind: number;
-      if (wy < POLE_ROWS) {
-        // The north pole cap — always snow at the very top of the map.
-        kind = TILE_SNOW;
-      } else if (elevation < 0.33) {
-        // Deep water — larger bodies at this lowered frequency
+      if (elevation < 0.33) {
+        // Deep water — oceans and long lakes
         kind = TILE_WATER;
       } else if (elevation < 0.43) {
-        // Wide beach band at water's edge — sand is clearly visible
+        // Beach band at the water's edge
         kind = TILE_SAND;
       } else if (elevation > 0.74) {
-        // Mountain ranges — form at high elevation
+        // Mountain ranges
         kind = TILE_MOUNTAIN;
-      } else if ((elevation > 0.7 && temperature > 0.45) || temperature > 0.85) {
-        // Snow-capped shoulders just below the peaks, plus a polar band.
-        // `temperature` is latitude (1 at the north edge, 0 at the south)
-        // plus up to +0.2 of noise, so it reaches ~0.7 at the world centre —
-        // where players spawn. The polar threshold must stay above that or
-        // the entire middle of the map turns into a snow field.
+      } else if (climate > 0.78) {
+        // Polar region — the top-right corner of the map
         kind = TILE_SNOW;
-      } else if (moisture < 0.28 && elevation < 0.55) {
-        // Dry lowlands — small desert regions of sand
+      } else if (elevation > 0.7 && climate > 0.62) {
+        // Snow-capped shoulders below the peaks, in the cold half only
+        kind = TILE_SNOW;
+      } else if (climate < 0.22) {
+        // Desert — the bottom-left corner of the map
         kind = TILE_SAND;
+      } else if (climate < 0.34 && moisture < 0.5) {
+        // Arid scrubland: the buffer between desert and temperate
+        kind = TILE_DIRT;
       } else if (moisture > 0.55 && elevation < 0.5) {
         // Wet lowlands → swamp
         kind = TILE_SWAMP;
@@ -417,9 +428,9 @@ export function generateChunk(
         // Dry regions → dirt/scrubland
         kind = TILE_DIRT;
       } else {
-        // Default
         kind = TILE_GRASS;
       }
+
       data[ly * CHUNK_SIZE + lx] = kind;
     }
   }
