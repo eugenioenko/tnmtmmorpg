@@ -107,14 +107,6 @@ function fbm(seed: number, x: number, y: number, octaves: number): number {
   return value / max;
 }
 
-/** True when the chunk holds any non-grass tile. */
-function hasNonGrass(data: Uint8Array): boolean {
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] !== TILE_GRASS) return true;
-  }
-  return false;
-}
-
 /**
  * Smoothing pass: a land tile whose neighbors are mostly a different kind
  * switches to match them, wiping single-tile noise so biomes read as clean
@@ -463,6 +455,8 @@ export class ChunkStore {
   private readonly chunks = new Map<string, Uint8Array>();
   /** Chunks whose tiles changed since the last flush; each is persisted on flush. */
   private readonly dirtyChunks = new Set<string>();
+  /** Chunks generated since the last drainFresh(); awaiting feature decoration. */
+  private fresh: { cx: number; cy: number }[] = [];
   /** When present, freshly generated non-grass chunks are persisted immediately. */
   private readonly db: DatabaseSync | undefined;
   private readonly width: number;
@@ -513,9 +507,20 @@ export class ChunkStore {
 
   /**
    * The chunk at (cx, cy), generating it deterministically on first use.
-   * Freshly generated chunks with any non-grass tile are persisted to the db
-   * immediately (when the world was constructed with one), so generated
-   * content survives restarts and the db mirrors exactly what was explored.
+   *
+   * A freshly generated chunk is persisted immediately (when the world has a
+   * db), unconditionally. The persist used to be gated on the chunk holding
+   * a non-grass tile, but that gate is what makes "is it in the db" mean
+   * "has it been generated before" — and that equivalence is exactly what
+   * keeps chunk decoration one-shot across restarts. An all-grass chunk
+   * would otherwise regenerate on every boot and be decorated again, growing
+   * a fresh crop of trees each time. In practice the gate never fired
+   * anyway: with biomes and roads, 0 of 256 sampled chunks were pure grass.
+   *
+   * Newly generated chunks are recorded in `fresh` rather than decorated
+   * here: this runs on the read path (snapshot building calls world.tile()),
+   * and spawning entities mid-read would mutate the store while it is being
+   * serialised. The tick loop drains them at a safe boundary.
    */
   ensure(cx: number, cy: number): Uint8Array {
     const key = chunkKey(cx, cy);
@@ -523,8 +528,30 @@ export class ChunkStore {
     if (data) return data;
     data = generateChunk(this.seed, cx, cy, this.width, this.height);
     this.chunks.set(key, data);
-    if (this.db && hasNonGrass(data)) saveChunk(this.db, key, data);
+    if (this.db) saveChunk(this.db, key, data);
+    this.fresh.push({ cx, cy });
     return data;
+  }
+
+  /**
+   * Chunk coords generated since the last call, and clears the list. Chunks
+   * restored from the db never appear here, so a decorator sees each chunk
+   * exactly once in the world's lifetime.
+   */
+  drainFresh(): { cx: number; cy: number }[] {
+    if (this.fresh.length === 0) return [];
+    const out = this.fresh;
+    this.fresh = [];
+    return out;
+  }
+
+  /** Offer already-loaded chunks (e.g. restored from the db) as candidates. */
+  offerForDecoration(keys: Iterable<string>): void {
+    for (const key of keys) {
+      const comma = key.indexOf(',');
+      if (comma < 0) continue;
+      this.fresh.push({ cx: Number(key.slice(0, comma)), cy: Number(key.slice(comma + 1)) });
+    }
   }
 
   /**

@@ -172,6 +172,16 @@ export class World {
     this.dirty.add(id);
   }
 
+  /**
+   * Chunks generated since the last call. Core hands these to features'
+   * decorateChunk hooks at a tick boundary — never on the read path that
+   * generated them, since snapshot building calls tile() and spawning there
+   * would mutate the entity store mid-serialisation.
+   */
+  drainFreshChunks(): { cx: number; cy: number }[] {
+    return this.tiles.drainFresh();
+  }
+
   /** Record that an entity was modified in place (e.g. a component change). */
   markDirty(id: number): void {
     this.dirty.add(id);
@@ -387,6 +397,23 @@ export class World {
    */
   loadChunks(chunks: Map<string, Uint8Array>): void {
     this.tiles.load(chunks);
+    // Restored chunks are decoration CANDIDATES, not automatically decorated.
+    // tools/reset-world.mjs generates and persists the spawn chunks before
+    // any server runs, so inferring "decorated" from "present in the db"
+    // would leave exactly the ground players start on permanently bare.
+    // Whether a chunk was decorated is a separate, explicitly recorded fact
+    // (see hasDecoratedChunk); offering it here costs one kv read.
+    this.tiles.offerForDecoration(chunks.keys());
+  }
+
+  /**
+   * Claim a chunk for decoration: true the first time it is asked for a
+   * given chunk, false forever after. The claim is a persistent kv flag, so
+   * it survives restarts — which is what stops a reboot growing a second
+   * crop of trees on ground that already has them.
+   */
+  claimChunkDecoration(cx: number, cy: number): boolean {
+    return this.getSet(`chunk:decorated:${cx},${cy}`, '1') === undefined;
   }
 
   /**

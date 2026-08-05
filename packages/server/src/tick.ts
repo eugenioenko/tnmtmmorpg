@@ -43,6 +43,11 @@ export interface TickLoopOptions {
    * A system that needs a tick-based timer counts its own runs — the loop's
    * tick number restarts at 1 on every boot, so the two are the same number.
    */
+  /**
+   * Feature hook: hand newly-generated chunks to features' decorateChunk
+   * hooks. Called at the top of the tick, off the chunk-generation read path.
+   */
+  decorateChunks?: () => void;
   runSystems?: (deltaSeconds: number) => void;
   /**
    * Feature hook: flush spatially-scoped events (emitNear) after the regular
@@ -138,7 +143,13 @@ export function createTickLoop(world: World, options: TickLoopOptions): TickLoop
     tickNumber++;
     options.profiler?.startTick();
 
-    // 1. Drain the intent queue, in arrival order.
+    // 1. Decorate any chunks generated since the last tick, then drain the
+    //    intent queue in arrival order. Decoration runs first and here, not
+    //    where the chunk was generated: generation happens lazily inside
+    //    world.tile(), which snapshot building calls, so spawning there
+    //    would mutate the entity store while it is being serialised.
+    options.decorateChunks?.();
+
     while (queue.length > 0) {
       const item = queue.shift();
       if (item) handleIntent(item);

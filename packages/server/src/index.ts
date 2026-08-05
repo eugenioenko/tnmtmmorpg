@@ -4,7 +4,13 @@ import { EventBus } from './events.ts';
 import { createGuard } from './guard.ts';
 import { loadFeatures } from './loader.ts';
 import { createTickLoop } from './tick.ts';
-import { DEFAULT_WORLD_HEIGHT, DEFAULT_WORLD_SEED, DEFAULT_WORLD_WIDTH, World } from './world.ts';
+import {
+  CHUNK_SIZE,
+  DEFAULT_WORLD_HEIGHT,
+  DEFAULT_WORLD_SEED,
+  DEFAULT_WORLD_WIDTH,
+  World,
+} from './world.ts';
 import { createWorldApi } from './world-api.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 import { tickCrafting, type CraftingContext } from './systems/crafting.ts';
@@ -171,9 +177,54 @@ async function main(): Promise<void> {
   // (stack limits) next to the world.
   const inventory: InventoryContext = { world, items: registries.items };
 
+  /**
+   * Hand every newly-generated chunk to each feature's decorateChunk hook,
+   * guarded like any other feature entry point so a throwing decorator
+   * disables itself instead of breaking world generation.
+   *
+   * Each hook gets an RNG seeded from (world seed, cx, cy) rather than
+   * world.rng(): that is one shared sequence whose values depend on call
+   * order, so a chunk's contents would otherwise depend on the order players
+   * happened to explore in. This is stable per chunk, so a given seed always
+   * produces the same world however it is walked.
+   */
+  const decorators = features.filter((f) => typeof f.plugin.decorateChunk === 'function');
+  function decorateChunks(): void {
+    if (decorators.length === 0) return;
+    for (const { cx, cy } of world.drainFreshChunks()) {
+      // Claim first: a chunk is decorated exactly once in a world's life,
+      // whether it was just generated or restored from an earlier session.
+      if (!world.claimChunkDecoration(cx, cy)) continue;
+      for (const feature of decorators) {
+        const api = worldApis.get(feature.name);
+        if (!api) continue;
+        guard.run(feature.name, `${feature.name}:decorateChunk`, () => {
+          let state = (((WORLD_SEED ^ (cx * 374761393 + cy * 668265263)) >>> 0) || 1) >>> 0;
+          const rng = (): number => {
+            state = (state * 1664525 + 1013904223) >>> 0;
+            return state / 2 ** 32;
+          };
+          feature.plugin.decorateChunk?.(
+            api,
+            {
+              cx,
+              cy,
+              minX: cx * CHUNK_SIZE,
+              minY: cy * CHUNK_SIZE,
+              maxX: cx * CHUNK_SIZE + CHUNK_SIZE - 1,
+              maxY: cy * CHUNK_SIZE + CHUNK_SIZE - 1,
+            },
+            rng,
+          );
+        });
+      }
+    }
+  }
+
   const tickLoop = createTickLoop(world, {
     broadcast: (buildPlayerSnapshot) => wsServer.broadcast(buildPlayerSnapshot),
     db,
+    decorateChunks,
     runSystems,
     // Spatial events (entity:damage, entity:death) flush right after the
     // regular event queue, every tick.

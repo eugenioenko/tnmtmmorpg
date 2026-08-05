@@ -146,6 +146,41 @@ export interface PluginAPI {
    * registered here rather than in a core registry.
    */
   events: Record<string, EventHandler>;
+  /**
+   * Called once, the first time a chunk is generated, so a feature can
+   * scatter content across it (trees, ore, ruins). The world is lazily
+   * generated — chunks materialise as players explore — so this fires for
+   * new ground indefinitely, rather than decorating a fixed box near spawn.
+   *
+   * Core drains newly-generated chunks at a tick boundary, never on the
+   * read path that generated them, so spawning here cannot mutate the
+   * entity store while a snapshot is being built.
+   *
+   * `rng` is seeded from (world seed, cx, cy) and is the ONLY randomness
+   * that belongs here: `world.rng()` is a single shared sequence whose
+   * values depend on call order, so using it would make a chunk's contents
+   * depend on the order players happened to explore in. This one is stable
+   * per chunk, so a given seed always produces the same world.
+   *
+   * Decoration is one-shot: a generated chunk is persisted, and chunks
+   * restored from the database are never re-decorated.
+   */
+  decorateChunk?: (world: WorldAPI, area: ChunkArea, rng: () => number) => void;
+}
+
+/**
+ * The patch of new ground handed to `decorateChunk`, in WORLD tile
+ * coordinates (inclusive bounds). Features iterate the bounds and never need
+ * to know the chunk size — that is core's business. `cx`/`cy` identify the
+ * chunk if a feature wants to key something off it.
+ */
+export interface ChunkArea {
+  cx: number;
+  cy: number;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 }
 
 /**
