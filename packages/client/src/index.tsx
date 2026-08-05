@@ -147,12 +147,30 @@ async function main(): Promise<void> {
 
   let socket: WebSocket | null = null;
   let game: Game = null!;
+  const pending: unknown[] = [];
 
   // Connect first so data arrives while PixiJS initialises.
   connect();
 
   // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
   game = await createGame();
+  game.state.connected = true;
+
+  // Replay any early messages that arrived while PixiJS was initialising
+  while (pending.length > 0) {
+    const msg = pending.shift()! as Record<string, unknown>;
+    if (isWelcome(msg)) {
+      game.setLocalEntity(msg.entityId);
+    } else if (isRecipesMessage(msg)) {
+      registerRecipes(msg.recipes);
+    } else if (isFullSnapshot(msg)) {
+      game.pushSnapshot(msg);
+      game.state.disabledFeatures = readDisabledFeatures(msg);
+    } else if (isDeltaSnapshot(msg)) {
+      game.pushSnapshot(msg);
+      game.state.disabledFeatures = readDisabledFeatures(msg);
+    }
+  }
 
   function sendIntent(intent: Intent): void {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -174,9 +192,7 @@ async function main(): Promise<void> {
     ws.binaryType = 'arraybuffer';
 
     ws.addEventListener('open', () => {
-      // Ask for the compact binary wire format. The server answers in
-      // binary once it sees this; if it is old and ignores it, the handler
-      // below just keeps parsing JSON — the fallback is seamless.
+      if (game) game.state.connected = true;
       ws.send(JSON.stringify({ t: 'binary', enabled: true }));
     });
 
@@ -199,15 +215,19 @@ async function main(): Promise<void> {
         }
       }
       if (typeof message !== 'object' || message === null) return;
-      if (!game) return; // PixiJS not ready yet — drop early frames
 
       const msg = message as Record<string, unknown>;
+      if (isPong(msg)) {
+        game.state.pingMs = ~~(performance.now() - msg.ts);
+        return;
+      }
+      // Buffer game-critical messages until PixiJS is ready
+      if (!game) { pending.push(msg); return; }
+
       if (isWelcome(msg)) {
         game.setLocalEntity(msg.entityId);
       } else if (isRecipesMessage(msg)) {
         registerRecipes(msg.recipes);
-      } else if (isPong(msg)) {
-        game.state.pingMs = ~~(performance.now() - msg.ts);
       } else if (isFullSnapshot(msg)) {
         game.pushSnapshot(msg);
         game.state.disabledFeatures = readDisabledFeatures(msg);
