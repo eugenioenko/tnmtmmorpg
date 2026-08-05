@@ -7,6 +7,17 @@ export interface WelcomeMessage {
   t: 'welcome';
   entityId: number;
   color: string;
+  /**
+   * How much world this server will send, in tiles either side of the
+   * player. The server is authoritative about this: the client caps its
+   * canvas so it never renders ground it was not sent. Clients may resize
+   * freely below the cap. Absent from an older server, in which case the
+   * client falls back to the shared defaults.
+   */
+  viewRadiusX?: number;
+  viewRadiusY?: number;
+  /** Tile edge in pixels, so the client converts the radii to a pixel cap. */
+  tileSize?: number;
 }
 
 /**

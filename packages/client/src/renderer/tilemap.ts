@@ -1,8 +1,9 @@
 import { Graphics } from 'pixi.js';
-import { TILE_BYTE_BY_KIND, TILE_COLORS, TILE_GRASS } from '@game/shared';
+import { TILE_BYTE_BY_KIND, TILE_COLORS, TILE_GRASS, TILE_SIZE, VIEW_HALO } from '@game/shared';
 
-/** World tile edge in pixels; every sprite and rect is sized against it. */
-export const TILE_SIZE = 32;
+// TILE_SIZE and the view radii live in @game/shared so the client can never
+// draw a different amount of world than the server sends.
+export { TILE_SIZE } from '@game/shared';
 
 /** Half a tile; the diagonal edge cuts pivot on the tile edge midpoints. */
 const HALF = TILE_SIZE / 2;
@@ -179,8 +180,8 @@ export class TilemapRenderer {
   ): void {
     // The drawn range must cover the camera view; the +1 halo is so the
     // corner sampling (which reads one tile out) stays inside drawn ground.
-    const halfX = ~~(viewW / (2 * TILE_SIZE)) + 3;
-    const halfY = ~~(viewH / (2 * TILE_SIZE)) + 3;
+    const halfX = ~~(viewW / (2 * TILE_SIZE)) + VIEW_HALO;
+    const halfY = ~~(viewH / (2 * TILE_SIZE)) + VIEW_HALO;
     const minX = ~~(cameraCenterX / TILE_SIZE) - halfX;
     const maxX = ~~(cameraCenterX / TILE_SIZE) + halfX;
     const minY = ~~(cameraCenterY / TILE_SIZE) - halfY;

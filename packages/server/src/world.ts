@@ -23,10 +23,10 @@ export {
   type TileKind,
 } from './world-chunks.ts';
 
-/** Tiles visible in each horizontal direction from a player. */
-export const VIEW_RADIUS_X = 30;
-/** Tiles visible in each vertical direction from a player. */
-export const VIEW_RADIUS_Y = 20;
+// The viewport window is defined once in @game/shared: the server sends
+// exactly this many tiles and the client draws exactly this many. Re-exported
+// so existing server imports keep working.
+export { VIEW_RADIUS_X, VIEW_RADIUS_Y } from '@game/shared';
 export const DEFAULT_WORLD_WIDTH = 10000;
 export const DEFAULT_WORLD_HEIGHT = 10000;
 export const DEFAULT_WORLD_SEED = 42;

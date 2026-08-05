@@ -173,6 +173,7 @@ async function main(): Promise<void> {
     const msg = pending.shift()! as Record<string, unknown>;
     if (isWelcome(msg)) {
       game.setLocalEntity(msg.entityId);
+      applyViewLimits(msg);
     } else if (isRecipesMessage(msg)) {
       registerRecipes(msg.recipes);
     } else if (isFullSnapshot(msg)) {
@@ -181,6 +182,17 @@ async function main(): Promise<void> {
     } else if (isDeltaSnapshot(msg)) {
       game.pushSnapshot(msg);
       game.state.disabledFeatures = readDisabledFeatures(msg);
+    }
+  }
+
+  /** The server declares how much world it sends; cap the canvas to it. */
+  function applyViewLimits(msg: WelcomeMessage): void {
+    if (
+      typeof msg.viewRadiusX === 'number' &&
+      typeof msg.viewRadiusY === 'number' &&
+      typeof msg.tileSize === 'number'
+    ) {
+      game.setViewLimits(msg.viewRadiusX, msg.viewRadiusY, msg.tileSize);
     }
   }
 

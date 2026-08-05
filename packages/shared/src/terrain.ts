@@ -77,3 +77,35 @@ export const TILE_NAMES: Record<number, string> = {
   [TILE_SNOW]: 'snow',
   [TILE_SWAMP]: 'swamp',
 };
+
+// ── Viewport: the single source of truth for how much world a client sees ──
+// The server sends a fixed window of tiles around each player, and the client
+// renders exactly that much. These MUST agree: when the client's drawn range
+// was derived from the browser window instead, anything past the server's
+// window fell back to grass and then snapped to real terrain as the player
+// walked into it — a flicker along whichever edge was leading.
+//
+// A fixed window also keeps the game fair. On a shared world a 4K monitor
+// would otherwise reveal several times more of the map than a laptop.
+
+/** World tile edge in pixels. */
+export const TILE_SIZE = 32;
+/** Tiles visible either side of the player, horizontally. */
+export const VIEW_RADIUS_X = 30;
+/** Tiles visible above and below the player. */
+export const VIEW_RADIUS_Y = 20;
+
+/**
+ * Tiles the renderer samples beyond the visible edge. The marching-squares
+ * corner test reads one tile out, so the outermost visible tiles need drawn
+ * neighbours to cut their diagonals against.
+ */
+export const VIEW_HALO = 3;
+
+/**
+ * Largest canvas that stays inside the tiles the server sends, in CSS px.
+ * The viewport is capped here rather than filling the window: beyond this
+ * the client would be drawing ground it was never told about.
+ */
+export const MAX_VIEW_WIDTH = (2 * (VIEW_RADIUS_X - VIEW_HALO) + 1) * TILE_SIZE;
+export const MAX_VIEW_HEIGHT = (2 * (VIEW_RADIUS_Y - VIEW_HALO) + 1) * TILE_SIZE;

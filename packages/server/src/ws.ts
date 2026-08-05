@@ -5,6 +5,9 @@ import {
   emptySlots,
   encodeServerMessage,
   INVENTORY_CAPACITY,
+  TILE_SIZE,
+  VIEW_RADIUS_X,
+  VIEW_RADIUS_Y,
   type Intent,
   type Pong,
   type RecipeDef,
@@ -159,6 +162,11 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
         t: 'welcome',
         entityId: session.entityId,
         color: session.color,
+        // The server decides how much world it sends; the client caps its
+        // canvas to this so it never renders ground it was not given.
+        viewRadiusX: VIEW_RADIUS_X,
+        viewRadiusY: VIEW_RADIUS_Y,
+        tileSize: TILE_SIZE,
       } satisfies WelcomeMessage),
     );
     // Phase 6: recipes are immutable at runtime, so one push per connect is

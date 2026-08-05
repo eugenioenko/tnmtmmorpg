@@ -148,11 +148,27 @@ function roundTripTests(): void {
   );
 
   console.log('unit: Welcome round-trip');
-  const welcome: WelcomeMessage = { t: 'welcome', entityId: 42, color: '#ff6b81' };
+  // The welcome also carries the server's view limits: the client caps its
+  // canvas to these, so losing them would let it render ground it was never
+  // sent (the old edge flicker).
+  const welcome: WelcomeMessage = {
+    t: 'welcome',
+    entityId: 42,
+    color: '#ff6b81',
+    viewRadiusX: 30,
+    viewRadiusY: 20,
+    tileSize: 32,
+  };
   const welcomeDecoded = decodeWelcome(encodeServerMessage(welcome), 1);
   assert(
     JSON.stringify(welcomeDecoded) === JSON.stringify(welcome),
-    'welcome (entityId + color) round-trips losslessly',
+    'welcome (entityId + color + view limits) round-trips losslessly',
+  );
+  assert(
+    welcomeDecoded.viewRadiusX === 30 &&
+      welcomeDecoded.viewRadiusY === 20 &&
+      welcomeDecoded.tileSize === 32,
+    'the view limits survive the wire',
   );
 
   console.log('unit: Pong round-trip');

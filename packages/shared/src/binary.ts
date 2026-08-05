@@ -47,6 +47,9 @@
 import {
   TILE_BYTE_BY_KIND,
   TILE_KIND_BY_BYTE,
+  TILE_SIZE,
+  VIEW_RADIUS_X,
+  VIEW_RADIUS_Y,
   type DeltaSnapshot,
   type EntityState,
   type FullSnapshot,
@@ -361,12 +364,23 @@ export function encodeWelcome(w: WelcomeMessage): Uint8Array {
   e.writeU8(MSG_WELCOME);
   e.writeU16(w.entityId);
   e.writeString(w.color);
+  // View limits: the server is authoritative about how much world it sends.
+  e.writeU16(w.viewRadiusX ?? VIEW_RADIUS_X);
+  e.writeU16(w.viewRadiusY ?? VIEW_RADIUS_Y);
+  e.writeU16(w.tileSize ?? TILE_SIZE);
   return e.toBuffer();
 }
 
 export function decodeWelcome(buf: Uint8Array, offset: number): WelcomeMessage {
   const d = new BinaryDecoder(buf, offset);
-  return { t: 'welcome', entityId: d.readU16(), color: d.readString() };
+  return {
+    t: 'welcome',
+    entityId: d.readU16(),
+    color: d.readString(),
+    viewRadiusX: d.readU16(),
+    viewRadiusY: d.readU16(),
+    tileSize: d.readU16(),
+  };
 }
 
 // ── Pong (0x04) ─────────────────────────────────────────────────────────────

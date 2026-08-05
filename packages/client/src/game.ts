@@ -1,5 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { DeltaSnapshot, EntityState, FullSnapshot, TileState } from '@game/shared';
+import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, VIEW_HALO } from '@game/shared';
 import { Camera } from './camera.ts';
 import { EntityRenderer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
@@ -78,6 +79,12 @@ export class Game {
   private fpsWindowMs = 0;
   private readonly app: Application;
   private readonly worldLayer: Container;
+  /**
+   * Adopt the server's declared view window (set in create()). The server is
+   * authoritative about how much world it sends; the canvas is capped so the
+   * client never renders ground it was not given.
+   */
+  setViewLimits: (radiusX: number, radiusY: number, tileSize: number) => void = () => {};
 
   private constructor(
     app: Application,
@@ -109,18 +116,50 @@ export class Game {
       throw new Error('createGame: #game-canvas element not found');
     }
 
+    /**
+     * The canvas is capped at the tiles the server actually sends, and
+     * letterboxed inside the window rather than filling it.
+     *
+     * Filling the window meant the drawn range was derived from the browser
+     * size while the server's window was a fixed 61x41 tiles. Past about
+     * 1790px wide the client was drawing ground it had never been told
+     * about; those tiles fell back to grass and then snapped to their real
+     * terrain as the player walked into them — the flicker along whichever
+     * edge was leading. A fixed window also keeps a shared world fair: a 4K
+     * monitor would otherwise reveal several times more map than a laptop.
+     */
+    // Defaults until the server's welcome arrives; setViewLimits tightens
+    // them to whatever this server actually sends.
+    let maxW = MAX_VIEW_WIDTH;
+    let maxH = MAX_VIEW_HEIGHT;
+    function viewportSize(): { w: number; h: number } {
+      return {
+        w: window.innerWidth < maxW ? window.innerWidth : maxW,
+        h: window.innerHeight < maxH ? window.innerHeight : maxH,
+      };
+    }
+
+    const initial = viewportSize();
     const app = new Application();
     await app.init({
       canvas,
       preference: 'webgl',
-      background: 0x0d0d0d,
-      resizeTo: window,
+      background: 0x141518,
+      width: initial.w,
+      height: initial.h,
       autoDensity: true,
       resolution: 1,
       antialias: false,
-        failIfMajorPerformanceCaveat: false,
+      failIfMajorPerformanceCaveat: false,
     });
     app.ticker.maxFPS = 60;
+
+    // Re-clamp on resize; `resizeTo: window` would grow past the server's
+    // window again. The CSS in index.html centres the canvas in the page.
+    window.addEventListener('resize', () => {
+      const { w, h } = viewportSize();
+      app.renderer.resize(w, h);
+    });
 
     const worldLayer = new Container();
     const tileLayer = new Graphics();
@@ -129,6 +168,19 @@ export class Game {
     app.stage.addChild(worldLayer);
 
     const game = new Game(app, worldLayer, tileLayer, entityLayer);
+    /**
+     * Adopt the server's declared view window. The server is authoritative
+     * about how much world it sends; rendering past it would show ground the
+     * client was never given (it would fall back to grass and then snap to
+     * real terrain — the old edge flicker). Resizing below the cap is fine.
+     */
+    game.setViewLimits = (radiusX: number, radiusY: number, tileSize: number): void => {
+      if (!(radiusX > 0) || !(radiusY > 0) || !(tileSize > 0)) return;
+      maxW = (2 * (radiusX - VIEW_HALO) + 1) * tileSize;
+      maxH = (2 * (radiusY - VIEW_HALO) + 1) * tileSize;
+      const { w, h } = viewportSize();
+      app.renderer.resize(w, h);
+    };
     app.ticker.add(() => game.update());
     return game;
   }
