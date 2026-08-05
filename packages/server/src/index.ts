@@ -42,8 +42,7 @@ async function main(): Promise<void> {
   // restarts from duplicating them.
   if (world.query(NPC_KIND).length === 0) {
     const spawned = scatterNPCs(world, 20);
-    console.log(`[server] spawned ${spawned} wandering NPCs near the origin`);
-  }
+    console.log(`[server] spawned ${spawned} wandering NPCs near the origin`);  }
 
   // ── Phase 4: feature plugins ─────────────────────────────────────────────
   // Loaded once at boot; the registries are immutable afterwards. Entities

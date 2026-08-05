@@ -142,17 +142,17 @@ function loadFeaturePanels(): Record<string, FeaturePanel> {
 }
 
 async function main(): Promise<void> {
-  // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
-  // Connect first so data arrives while PixiJS initialises.
-  connect();
-
-  // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
-  const game: Game = await createGame();
-
   // Feature panels discovered via import.meta.glob; loaded before React mounts.
   const featurePanels = loadFeaturePanels();
 
   let socket: WebSocket | null = null;
+  let game: Game = null!;
+
+  // Connect first so data arrives while PixiJS initialises.
+  connect();
+
+  // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
+  game = await createGame();
 
   function sendIntent(intent: Intent): void {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -199,12 +199,12 @@ async function main(): Promise<void> {
         }
       }
       if (typeof message !== 'object' || message === null) return;
+      if (!game) return; // PixiJS not ready yet — drop early frames
 
       const msg = message as Record<string, unknown>;
       if (isWelcome(msg)) {
         game.setLocalEntity(msg.entityId);
       } else if (isRecipesMessage(msg)) {
-        // Phase 6: the recipe registry powers the recipe browser panel.
         registerRecipes(msg.recipes);
       } else if (isPong(msg)) {
         game.state.pingMs = ~~(performance.now() - msg.ts);
@@ -218,8 +218,10 @@ async function main(): Promise<void> {
     });
 
     ws.addEventListener('close', () => {
-      game.state.connected = false;
-      game.setLocalEntity(null);
+      if (game) {
+        game.state.connected = false;
+        game.setLocalEntity(null);
+      }
       setTimeout(connect, RECONNECT_DELAY_MS);
     });
   }

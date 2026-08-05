@@ -20,49 +20,12 @@ import { definePlugin } from '@game/shared';
  * double-seed.
  */
 
-/** Half the side of the scatter box: bushes/trees appear within this many
- * tiles of the world centre (players always spawn near the centre). */
-const SPAWN_RADIUS = 200;
-
 export default definePlugin({
   id: 'nature',
   entityKinds: ['nature:bush', 'nature:tree'],
-  systems: [
-    {
-      name: 'nature:generate',
-      fn: (world) => {
-        // One-time bootstrap. getSet with a value stores and returns the
-        // previous value: the first run sees undefined and scatters, every
-        // later run (restarts included) sees '1' and returns immediately.
-        if (world.getSet('nature:seeded', '1') !== undefined) return;
-
-        const cx = (world.width / 2) | 0;
-        const cy = (world.height / 2) | 0;
-        let bushes = 0;
-        let trees = 0;
-        for (let dy = -SPAWN_RADIUS; dy <= SPAWN_RADIUS; dy++) {
-          for (let dx = -SPAWN_RADIUS; dx <= SPAWN_RADIUS; dx++) {
-            const kind = world.tile(cx + dx, cy + dy);
-            const roll = world.rng(); // seeded: a given seed scatters the same population
-            const onGrass = kind === 'grass' || kind === 'forest';
-            if (roll < 0.008 && onGrass) {
-              // Trees: 0.5-1% chance on grass and forest.
-              world.spawn('nature:tree', { x: cx + dx, y: cy + dy });
-              trees++;
-            } else if (roll < 0.03 && (onGrass || kind === 'swamp')) {
-              // Bushes: 1-3% chance on grass, forest and swamp.
-              world.spawn('nature:bush', { x: cx + dx, y: cy + dy });
-              bushes++;
-            }
-          }
-        }
-        world.log(
-          `seeded ${bushes} bushes and ${trees} trees near the world centre ` +
-            `(±${SPAWN_RADIUS} tiles)`,
-        );
-      },
-    },
-  ],
+  // Scattering happens at server boot (see packages/server/src/index.ts) 
+  // before the tick loop starts, so it never hits the guard's time budget.
+  systems: [],
   commands: [],
   events: {},
   items: [],

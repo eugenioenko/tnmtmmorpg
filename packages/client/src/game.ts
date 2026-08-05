@@ -111,7 +111,7 @@ export class Game {
       background: 0x0d0d0d,
       resizeTo: window,
       autoDensity: true,
-      resolution: window.devicePixelRatio || 1,
+      resolution: 1,
       antialias: false,
         failIfMajorPerformanceCaveat: false,
     });
