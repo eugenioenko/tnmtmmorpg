@@ -143,6 +143,10 @@ function loadFeaturePanels(): Record<string, FeaturePanel> {
 
 async function main(): Promise<void> {
   // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
+  // Connect first so data arrives while PixiJS initialises.
+  connect();
+
+  // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
   const game: Game = await createGame();
 
   // Feature panels discovered via import.meta.glob; loaded before React mounts.
@@ -163,7 +167,6 @@ async function main(): Promise<void> {
   });
 
   function connect(): void {
-    game.state.connected = false;
     const ws = new WebSocket(WS_URL);
     socket = ws;
     // Binary frames arrive as ArrayBuffers, not Blobs, so the handler below
@@ -171,7 +174,6 @@ async function main(): Promise<void> {
     ws.binaryType = 'arraybuffer';
 
     ws.addEventListener('open', () => {
-      game.state.connected = true;
       // Ask for the compact binary wire format. The server answers in
       // binary once it sees this; if it is old and ignores it, the handler
       // below just keeps parsing JSON — the fallback is seamless.
@@ -253,7 +255,6 @@ async function main(): Promise<void> {
     sendIntent({ t: 'intent', kind: 'move', dir });
   });
 
-  connect();
   startPing();
 }
 
