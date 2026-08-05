@@ -376,12 +376,12 @@ export function generateChunk(
       // terrain instead of scattered noise ponds; fewer octaves soften it.
       // Elevation drives oceans, landmass and mountains; moisture separates
       // forest/swamp from scrubland and desert.
-      const elevation = fbm(seed, wx * 0.002, wy * 0.002, 3);
-      const moisture = fbm(seed + 5000, wx * 0.004, wy * 0.004, 3);
+      const elevation = fbm(seed, wx * 0.02, wy * 0.02, 3);
+      const moisture = fbm(seed + 5000, wx * 0.015, wy * 0.015, 3);
 
       // Latitude temperature (north=cold, south=hot)
       const lat = 1 - wy / (worldHeight - 1); // 1 at top, 0 at bottom
-      const tempVar = fbm(seed + 10000, wx * 0.004, wy * 0.004, 2) * 0.2;
+      const tempVar = fbm(seed + 10000, wx * 0.01, wy * 0.01, 2) * 0.2;
       const temperature = lat * 1.0 + tempVar;
 
       let kind: number;
@@ -397,8 +397,12 @@ export function generateChunk(
       } else if (elevation > 0.74) {
         // Mountain ranges — form at high elevation
         kind = TILE_MOUNTAIN;
-      } else if ((elevation > 0.66 && temperature > 0.55) || temperature > 0.62) {
-        // Snowy peaks at very high elevation, or cold northern latitudes
+      } else if ((elevation > 0.7 && temperature > 0.45) || temperature > 0.85) {
+        // Snow-capped shoulders just below the peaks, plus a polar band.
+        // `temperature` is latitude (1 at the north edge, 0 at the south)
+        // plus up to +0.2 of noise, so it reaches ~0.7 at the world centre —
+        // where players spawn. The polar threshold must stay above that or
+        // the entire middle of the map turns into a snow field.
         kind = TILE_SNOW;
       } else if (moisture < 0.28 && elevation < 0.55) {
         // Dry lowlands — small desert regions of sand

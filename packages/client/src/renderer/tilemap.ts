@@ -157,6 +157,8 @@ export class TilemapRenderer {
   private minY = 0;
   private maxY = 0;
   private readonly layer: Graphics;
+  /** Scratch buffer for the decoded visible range; grown on demand, reused. */
+  private buf = new Uint8Array(0);
 
   constructor(layer: Graphics) {
     this.layer = layer;
@@ -179,30 +181,46 @@ export class TilemapRenderer {
     // corner sampling (which reads one tile out) stays inside drawn ground.
     const halfX = ~~(viewW / (2 * TILE_SIZE)) + 3;
     const halfY = ~~(viewH / (2 * TILE_SIZE)) + 3;
-    let minX = ~~(cameraCenterX / TILE_SIZE) - halfX;
-    let maxX = ~~(cameraCenterX / TILE_SIZE) + halfX;
-    let minY = ~~(cameraCenterY / TILE_SIZE) - halfY;
-    let maxY = ~~(cameraCenterY / TILE_SIZE) + halfY;
-    const parsed: { x: number; y: number; kind: string }[] = [];
-    for (const [key, kind] of tiles) {
-      const comma = key.indexOf(',');
-      parsed.push({
-        x: Number(key.slice(0, comma)),
-        y: Number(key.slice(comma + 1)),
-        kind,
-      });
-    }
+    const minX = ~~(cameraCenterX / TILE_SIZE) - halfX;
+    const maxX = ~~(cameraCenterX / TILE_SIZE) + halfX;
+    const minY = ~~(cameraCenterY / TILE_SIZE) - halfY;
+    const maxY = ~~(cameraCenterY / TILE_SIZE) + halfY;
 
-    // Anything the client knows about must be drawn even if the camera
-    // centre math above missed it.
-    for (const tile of parsed) {
-      if (tile.x < minX) minX = tile.x;
-      if (tile.x > maxX) maxX = tile.x;
-      if (tile.y < minY) minY = tile.y;
-      if (tile.y > maxY) maxY = tile.y;
-    }
+    // The drawn range is the camera viewport and nothing more. It must never
+    // be widened to cover the known-tiles map: those are absolute world
+    // coordinates (~5000,5000), while the camera reads (0,0) until the local
+    // player's entity arrives. Spanning the two produced a ~25M-cell
+    // rectangle on the first frame, which hung the GPU process.
+    // Tiles outside the viewport are not visible, so they are simply clipped.
 
-    const key = parsed.map((t) => `${t.x},${t.y}:${t.kind}`).join('|');
+    // Decode the visible range (plus a 1-tile halo, since corner sampling
+    // reads one tile out) into a flat byte buffer ONCE. The corner mask does
+    // 16 grid() reads per cell and cornerTerrain several more; going straight
+    // to the tiles map would build a `${x},${y}` key on every one of those —
+    // ~20k string allocations per rebuild. This is ~1.2k instead, and every
+    // later read is a plain array index.
+    const bufW = maxX - minX + 3;
+    const bufH = maxY - minY + 3;
+    if (this.buf.length < bufW * bufH) this.buf = new Uint8Array(bufW * bufH);
+    const buf = this.buf;
+
+    // Change detection folded into the same pass, as a rolling FNV-1a hash
+    // (no allocation, unlike joining a ~2400-entry string every frame).
+    let hash = 2166136261;
+    hash = ((hash ^ minX) * 16777619) >>> 0;
+    hash = ((hash ^ minY) * 16777619) >>> 0;
+    hash = ((hash ^ maxX) * 16777619) >>> 0;
+    hash = ((hash ^ maxY) * 16777619) >>> 0;
+    for (let y = minY - 1; y <= maxY + 1; y++) {
+      const row = (y - minY + 1) * bufW;
+      for (let x = minX - 1; x <= maxX + 1; x++) {
+        const kind = tiles.get(`${x},${y}`);
+        const byte = kind === undefined ? TILE_GRASS : (TILE_BYTE_BY_KIND[kind] ?? TILE_GRASS);
+        buf[row + (x - minX + 1)] = byte;
+        if (byte !== TILE_GRASS) hash = ((hash ^ (x * 31 + y)) * 16777619 + byte) >>> 0;
+      }
+    }
+    const key = String(hash);
     if (
       key === this.tilesKey &&
       minX === this.minX &&
@@ -219,11 +237,13 @@ export class TilemapRenderer {
     this.maxY = maxY;
     this.layer.clear();
 
-    // Terrain byte for a world tile: the snapshot's kinds win, everything
-    // else (including out-of-view ground) defaults to grass.
+    // Terrain byte for a world tile, read from the decoded buffer above.
+    // Anything outside the halo (never sampled) reads as grass.
     const grid = (x: number, y: number): number => {
-      const kind = tiles.get(`${x},${y}`);
-      return kind === undefined ? TILE_GRASS : (TILE_BYTE_BY_KIND[kind] ?? TILE_GRASS);
+      const bx = x - minX + 1;
+      const by = y - minY + 1;
+      if (bx < 0 || by < 0 || bx >= bufW || by >= bufH) return TILE_GRASS;
+      return buf[by * bufW + bx];
     };
 
     for (let y = minY; y <= maxY; y++) {
