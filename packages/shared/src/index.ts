@@ -9,6 +9,7 @@ export * from './types/items.ts';
 export * from './types/messages.ts';
 export * from './types/plugin.ts';
 export * from './terrain.ts';
+export * from './worlds.ts';
 export * from './guards.ts';
 
 // ── Binary wire protocol ───────────────────────────────────────────────────

@@ -40,6 +40,7 @@ export function DebugPanel({ game }: { game: Game }) {
           <div>
             pos: {state.playerX}, {state.playerY}
           </div>
+          <div>world: {state.world}</div>
           <div>tick: {state.tick}</div>
           <div>ping: {state.pingMs} ms</div>
           <div>entities: {state.entityCount}</div>

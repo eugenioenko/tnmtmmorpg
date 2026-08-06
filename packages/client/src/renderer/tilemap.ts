@@ -1,5 +1,14 @@
 import { Graphics } from 'pixi.js';
-import { TILE_BYTE_BY_KIND, TILE_COLORS, TILE_GRASS, TILE_SIZE, VIEW_HALO } from '@game/shared';
+import {
+  OVERWORLD,
+  TILE_BYTE_BY_KIND,
+  TILE_GRASS,
+  TILE_SIZE,
+  TILE_VOID,
+  VIEW_HALO,
+  paletteColor,
+  resolveWorld,
+} from '@game/shared';
 
 // TILE_SIZE and the view radii live in @game/shared so the client can never
 // draw a different amount of world than the server sends.
@@ -153,6 +162,9 @@ function cornerTerrain(
 export class TilemapRenderer {
   // Last-drawn tilemap extent (the base follows the camera).
   private tilesKey = '';
+  /** The world being drawn, and the palette it selects. */
+  private world = OVERWORLD;
+  private palette = 'overworld';
   private minX = 0;
   private maxX = 0;
   private minY = 0;
@@ -171,6 +183,20 @@ export class TilemapRenderer {
    * the camera centre is the point the view is centred on (world px), and
    * the viewport is in CSS pixels.
    */
+  /**
+   * Which world is being drawn. Only the palette depends on it — tiles are
+   * the same bytes everywhere, so the fire world is the overworld's terrain
+   * in magma rather than a different format.
+   */
+  setWorld(world: string): void {
+    if (world === this.world) return;
+    this.world = world;
+    this.palette = resolveWorld(world)?.palette ?? 'overworld';
+    // Force the next rebuild: the tile SET may be identical while every
+    // colour changed, and the change hash would not notice.
+    this.tilesKey = '';
+  }
+
   rebuild(
     tiles: ReadonlyMap<string, string>,
     cameraCenterX: number,
@@ -215,8 +241,12 @@ export class TilemapRenderer {
     for (let y = minY - 1; y <= maxY + 1; y++) {
       const row = (y - minY + 1) * bufW;
       for (let x = minX - 1; x <= maxX + 1; x++) {
+        // Ground the server never mentioned. Outdoors that means grass (the
+        // server omits it to save bandwidth); inside a building it means
+        // void, because there "not sent" is "not carved".
+        const fallback = this.palette === 'interior' ? TILE_VOID : TILE_GRASS;
         const kind = tiles.get(`${x},${y}`);
-        const byte = kind === undefined ? TILE_GRASS : (TILE_BYTE_BY_KIND[kind] ?? TILE_GRASS);
+        const byte = kind === undefined ? fallback : (TILE_BYTE_BY_KIND[kind] ?? fallback);
         buf[row + (x - minX + 1)] = byte;
         if (byte !== TILE_GRASS) hash = ((hash ^ (x * 31 + y)) * 16777619 + byte) >>> 0;
       }
@@ -250,7 +280,7 @@ export class TilemapRenderer {
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         const byte = grid(x, y);
-        const color = TILE_COLORS[byte] ?? TILE_COLORS[TILE_GRASS];
+        const color = paletteColor(this.palette, byte);
         const ox = x * TILE_SIZE;
         const oy = y * TILE_SIZE;
 
@@ -261,7 +291,7 @@ export class TilemapRenderer {
         if (mask === 0) continue;
         for (const bit of CORNER_BITS) {
           if ((mask & bit) === 0) continue;
-          const foreign = TILE_COLORS[cornerTerrain(grid, x, y, bit)] ?? color;
+          const foreign = paletteColor(this.palette, cornerTerrain(grid, x, y, bit));
           const tri = CORNER_TRIANGLES[bit];
           this.layer
             .poly([ox + tri[0], oy + tri[1], ox + tri[2], oy + tri[3], ox + tri[4], oy + tri[5]])

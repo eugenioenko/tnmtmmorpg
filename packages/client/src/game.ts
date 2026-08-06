@@ -1,6 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { DeltaSnapshot, EntityState, FullSnapshot, TileState } from '@game/shared';
-import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, TILE_SIZE } from '@game/shared';
+import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, OVERWORLD, TILE_SIZE } from '@game/shared';
 import { Camera } from './camera.ts';
 import { EntityRenderer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
@@ -20,6 +20,8 @@ export interface GameState {
   /** The local player's authoritative world tile, straight from the snapshot. */
   playerX: number;
   playerY: number;
+  /** Which world the player is in; drives the tile palette. */
+  world: string;
   /** Feature systems the server guard auto-disabled; shown in a banner. */
   disabledFeatures: string[];
 }
@@ -36,6 +38,7 @@ export interface WorldState {
   tiles: TileState[];
   playerX: number;
   playerY: number;
+  world: string;
 }
 
 interface BufferedSnapshot {
@@ -72,6 +75,8 @@ export class Game {
   private readonly knownTiles = new Map<string, string>(); // "x,y" → kind
   private readonly modelEntities = new Map<number, EntityState>();
   private localEntityId: number | null = null;
+  /** The world currently on screen; a change wipes the rendered sprites. */
+  private renderedWorld = OVERWORLD;
   private readonly renderer: EntityRenderer;
   private readonly tilemap: TilemapRenderer;
   private readonly camera: Camera;
@@ -105,6 +110,7 @@ export class Game {
       connected: false,
       playerX: 0,
       playerY: 0,
+      world: OVERWORLD,
       disabledFeatures: [],
     };
   }
@@ -214,11 +220,26 @@ export class Game {
     this.camera.setViewport(viewW, viewH);
     this.camera.follow(this.renderer.tileCenter(this.localEntityId));
     this.camera.update(this.app.ticker.deltaMS / 1000);
+    // Changing world invalidates everything on screen: drop the old world's
+    // sprites at once rather than letting them linger through the despawn
+    // freeze, and start the interpolation fresh so nothing slides across.
+    if (latest.snapshot.world !== this.renderedWorld) {
+      this.renderedWorld = latest.snapshot.world;
+      this.renderer.clear();
+    }
+    this.tilemap.setWorld(latest.snapshot.world);
     this.tilemap.rebuild(this.knownTiles, this.camera.centreX, this.camera.centreY, viewW, viewH);
 
     // Render ~1 tick behind: when the newest snapshot arrives we are at the
     // previous one (alpha 0) and ease toward it over the next tick interval.
-    const older = this.buffer.length >= 2 ? this.buffer[this.buffer.length - 2] : undefined;
+    //
+    // Only ever pair snapshots from the SAME world. Straight after travelling
+    // the buffer still holds the world just left, and interpolating across
+    // the pair resurrects that world's entities — they get rebuilt from the
+    // older snapshot on the very frame the renderer was cleared, so the old
+    // map's contents stand around in the new one.
+    const previous = this.buffer.length >= 2 ? this.buffer[this.buffer.length - 2] : undefined;
+    const older = previous?.snapshot.world === latest.snapshot.world ? previous : undefined;
     const alpha = older ? clamp((performance.now() - latest.receivedAt) / TICK_MS, 0, 1) : 1;
 
     // Desired render positions: entities in both snapshots lerp; entities in
@@ -310,6 +331,7 @@ export class Game {
       }),
       playerX: msg.playerX,
       playerY: msg.playerY,
+      world: msg.world ?? OVERWORLD,
     };
     this.buffer.push({ snapshot: worldState, receivedAt: performance.now() });
     if (this.buffer.length > 2) this.buffer.shift();
@@ -317,6 +339,7 @@ export class Game {
     this.state.entityCount = worldState.entities.length;
     this.state.playerX = worldState.playerX;
     this.state.playerY = worldState.playerY;
+    this.state.world = worldState.world;
 
     // Ground-item stack counts change when someone picks up part of a
     // stack; refresh the count labels directly from the newest state.

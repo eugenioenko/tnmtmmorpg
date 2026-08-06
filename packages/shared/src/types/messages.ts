@@ -42,6 +42,12 @@ export interface WelcomeMessage {
  * accumulated state.
  */
 export interface FullSnapshot {
+  /**
+   * Which world this snapshot describes. The client keys its palette off it,
+   * and treats a change as "everything you knew is stale". Absent means the
+   * overworld, so an older server still makes sense.
+   */
+  world?: string;
   t: 'full';
   tick: number;
   entities: EntityState[];
@@ -66,6 +72,12 @@ export interface FullSnapshot {
  * this on top of its accumulated state.
  */
 export interface DeltaSnapshot {
+  /**
+   * Which world this snapshot describes. The client keys its palette off it,
+   * and treats a change as "everything you knew is stale". Absent means the
+   * overworld, so an older server still makes sense.
+   */
+  world?: string;
   t: 'delta';
   tick: number;
   /** Entities that entered or changed in viewport since last snapshot. */

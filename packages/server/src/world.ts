@@ -1,5 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { TILE_GRASS, WALKABLE_TILES, type WorldCoord } from '@game/shared';
+import {
+  OVERWORLD,
+  TILE_GRASS,
+  TILE_VOID,
+  WALKABLE_TILES,
+  resolveWorld,
+  type WorldCoord,
+  type WorldSpec,
+} from '@game/shared';
 import { getSet as kvGetSet, saveEntities } from './db.ts';
 import type { EntityRow } from './db.ts';
 import {
@@ -37,6 +45,13 @@ export interface Entity {
   x: number;
   y: number;
   components: Record<string, unknown>;
+  /**
+   * Which world this entity is in. Everything spatial is scoped by it: two
+   * entities at the same (x, y) in different worlds are nowhere near each
+   * other. Persisted inside the entity's JSON blob, so adding it needed no
+   * schema change, and rows written before worlds existed load as OVERWORLD.
+   */
+  world: string;
   /** Chunk key this entity lives in (e.g. '3,7'); maintained by the spatial index. */
   chunk: string;
 }
@@ -69,9 +84,17 @@ export class World {
   readonly seed: number;
 
   private readonly entities = new Map<number, Entity>();
-  /** The chunk-based tile map; all tile/chunk ops delegate to it. */
-  private readonly tiles: ChunkStore;
-  /** Entity spatial index: chunk key -> entity ids in that chunk. */
+  /**
+   * One tile map per world, created on first touch. An unvisited world costs
+   * nothing until something reads a tile in it, which is what makes five
+   * 10000x10000 worlds plus a store per building affordable.
+   */
+  private readonly stores = new Map<string, ChunkStore>();
+  /**
+   * Entity spatial index: 'world|cx,cy' -> entity ids. Scoping the key by
+   * world is what stops queryNear and hasPlayerNear seeing through the floor
+   * into another world at the same coordinates.
+   */
   private readonly entityChunks = new Map<string, Set<number>>();
   private nextId = 1;
   private rngState: number;
@@ -94,7 +117,59 @@ export class World {
     this.seed = seed ?? DEFAULT_WORLD_SEED;
     this.rngState = seed ?? Date.now() % 2 ** 32;
     this.db = db;
-    this.tiles = new ChunkStore(db, width, height, this.seed);
+    // The overworld's spec comes from the constructor args so existing
+    // callers (tests, tools) keep controlling size and seed directly.
+    this.stores.set(
+      OVERWORLD,
+      new ChunkStore(db, {
+        ...(resolveWorld(OVERWORLD) as WorldSpec),
+        width,
+        height,
+        seed: this.seed,
+      }),
+    );
+  }
+
+  /** The spec for a world id, or undefined if nothing mints that id. */
+  spec(world: string): WorldSpec | undefined {
+    if (world === OVERWORLD) {
+      return { ...(resolveWorld(OVERWORLD) as WorldSpec), width: this.width, height: this.height, seed: this.seed };
+    }
+    return resolveWorld(world);
+  }
+
+  /** Every world with state loaded right now. */
+  activeWorlds(): string[] {
+    return [...this.stores.keys()];
+  }
+
+  /**
+   * The tile store for a world, created on first use. Unknown ids fall back
+   * to the overworld rather than throwing: a feature that invents a world id
+   * should get an empty-but-sane world, not crash the tick.
+   */
+  private store(world: string): ChunkStore {
+    let store = this.stores.get(world);
+    if (store) return store;
+    const spec = this.spec(world);
+    if (!spec) return this.stores.get(OVERWORLD)!;
+    store = new ChunkStore(this.db, spec);
+    this.stores.set(world, store);
+    return store;
+  }
+
+  /** Width of a world in tiles (worlds are not all the same size). */
+  private widthOf(world: string): number {
+    return world === OVERWORLD ? this.width : (this.spec(world)?.width ?? this.width);
+  }
+
+  private heightOf(world: string): number {
+    return world === OVERWORLD ? this.height : (this.spec(world)?.height ?? this.height);
+  }
+
+  /** The spatial-index key for a chunk of a world. */
+  private indexKey(world: string, cx: number, cy: number): string {
+    return `${world}|${chunkKey(cx, cy)}`;
   }
 
   /** Deterministic pseudo-random number in [0, 1). Never use Math.random. */
@@ -118,9 +193,14 @@ export class World {
   }
 
   /** Spawn an entity at a position; returns its id. */
-  spawn(kind: string, pos: WorldCoord, components: Record<string, unknown> = {}): number {
+  spawn(
+    kind: string,
+    pos: WorldCoord,
+    components: Record<string, unknown> = {},
+    world: string = OVERWORLD,
+  ): number {
     const id = this.nextId++;
-    this.entities.set(id, { id, kind, x: pos.x, y: pos.y, components, chunk: '' });
+    this.entities.set(id, { id, kind, x: pos.x, y: pos.y, components, world, chunk: '' });
     this.updateEntityChunk(id, pos.x, pos.y);
     this.dirty.add(id);
     return id;
@@ -153,10 +233,44 @@ export class World {
   moveEntity(id: number, x: number, y: number): void {
     const entity = this.entities.get(id);
     if (!entity) return;
-    entity.x = ((x % this.width) + this.width) % this.width;
-    entity.y = ((y % this.height) + this.height) % this.height;
+    // Wrap against the entity's OWN world: a 48-tile interior is a much
+    // smaller torus than the overworld.
+    const w = this.widthOf(entity.world);
+    const h = this.heightOf(entity.world);
+    entity.x = ((x % w) + w) % w;
+    entity.y = ((y % h) + h) % h;
     this.updateEntityChunk(id, entity.x, entity.y);
     this.dirty.add(id);
+  }
+
+  /**
+   * Move an entity to another world. This is the door, the portal and the
+   * way back: the only operation that changes an entity's world.
+   *
+   * Unlike moveEntity this does not validate walkability — the caller picks
+   * an arrival tile, and a feature that drops a player into a wall has a bug
+   * the collision rule cannot fix for it.
+   */
+  travelEntity(id: number, world: string, x: number, y: number): boolean {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    if (!this.spec(world)) return false;
+    // Leave the old world's index before the world id changes, or the stale
+    // entry would be orphaned under a key we can no longer compute.
+    const oldSet = this.entityChunks.get(entity.chunk);
+    if (oldSet) {
+      oldSet.delete(id);
+      if (oldSet.size === 0) this.entityChunks.delete(entity.chunk);
+    }
+    entity.chunk = '';
+    entity.world = world;
+    const w = this.widthOf(world);
+    const h = this.heightOf(world);
+    entity.x = ((x % w) + w) % w;
+    entity.y = ((y % h) + h) % h;
+    this.updateEntityChunk(id, entity.x, entity.y);
+    this.dirty.add(id);
+    return true;
   }
 
   despawn(id: number): void {
@@ -179,7 +293,10 @@ export class World {
    * would mutate the entity store mid-serialisation.
    */
   drainFreshChunks(): { cx: number; cy: number }[] {
-    return this.tiles.drainFresh();
+    // Only the overworld is offered for decoration. Interiors are carved by
+    // their generator, and a decorator scattering trees into a building
+    // would be scattering them into the void.
+    return this.store(OVERWORLD).drainFresh();
   }
 
   /** Record that an entity was modified in place (e.g. a component change). */
@@ -199,7 +316,9 @@ export class World {
 
   /** Number of tile chunks currently loaded in memory. */
   get chunkCount(): number {
-    return this.tiles.size;
+    let total = 0;
+    for (const store of this.stores.values()) total += store.size;
+    return total;
   }
 
   /**
@@ -207,13 +326,19 @@ export class World {
    * chunk (cx, cy). This is a superset of the exact tile viewport — callers
    * filter by exact coordinates.
    */
-  entitiesInView(cx: number, cy: number, viewRadiusX: number, viewRadiusY: number): Entity[] {
+  entitiesInView(
+    cx: number,
+    cy: number,
+    viewRadiusX: number,
+    viewRadiusY: number,
+    world: string = OVERWORLD,
+  ): Entity[] {
     const radiusX = (viewRadiusX + (CHUNK_SIZE - 1)) >> CHUNK_SHIFT;
     const radiusY = (viewRadiusY + (CHUNK_SIZE - 1)) >> CHUNK_SHIFT;
     const found = new Set<number>();
     for (let cy2 = cy - radiusY; cy2 <= cy + radiusY; cy2++) {
       for (let cx2 = cx - radiusX; cx2 <= cx + radiusX; cx2++) {
-        const set = this.entityChunks.get(chunkKey(cx2, cy2));
+        const set = this.entityChunks.get(this.indexKey(world, cx2, cy2));
         if (!set) continue;
         for (const id of set) found.add(id);
       }
@@ -230,33 +355,41 @@ export class World {
    * Tile kind at (x, y). Coordinates wrap around the torus — there are no
    * edges. Unloaded chunks are generated deterministically on first read.
    */
-  tile(x: number, y: number): TileKind {
-    const wx = ((x % this.width) + this.width) % this.width;
-    const wy = ((y % this.height) + this.height) % this.height;
-    return this.tiles.tileAt(wx, wy);
+  tile(x: number, y: number, world: string = OVERWORLD): TileKind {
+    const w = this.widthOf(world);
+    const h = this.heightOf(world);
+    const wx = ((x % w) + w) % w;
+    const wy = ((y % h) + h) % h;
+    return this.store(world).tileAt(wx, wy);
   }
 
   /**
    * The raw tile byte at (x, y) without generating anything. Coordinates
    * wrap around the torus. Unvisited areas read as grass.
    */
-  tileByte(x: number, y: number): number {
-    const wx = ((x % this.width) + this.width) % this.width;
-    const wy = ((y % this.height) + this.height) % this.height;
+  tileByte(x: number, y: number, world: string = OVERWORLD): number {
+    const w = this.widthOf(world);
+    const h = this.heightOf(world);
+    const wx = ((x % w) + w) % w;
+    const wy = ((y % h) + h) % h;
     const { cx, cy, lx, ly } = worldToChunk(wx, wy);
-    const chunk = this.tiles.getChunk(cx, cy);
-    if (!chunk) return TILE_GRASS; // ungenerated = grass
+    const chunk = this.store(world).getChunk(cx, cy);
+    // Ungenerated ground reads as the world's own default: grass outdoors,
+    // but VOID inside a building, where "not carved" means "not there".
+    if (!chunk) return this.spec(world)?.generator === 'rooms' ? TILE_VOID : TILE_GRASS;
     return chunk[ly * CHUNK_SIZE + lx];
   }
 
-  setTile(x: number, y: number, kind: string): void {
-    const wx = ((x % this.width) + this.width) % this.width;
-    const wy = ((y % this.height) + this.height) % this.height;
-    this.tiles.setTile(wx, wy, kind);
+  setTile(x: number, y: number, kind: string, world: string = OVERWORLD): void {
+    const w = this.widthOf(world);
+    const h = this.heightOf(world);
+    const wx = ((x % w) + w) % w;
+    const wy = ((y % h) + h) % h;
+    this.store(world).setTile(wx, wy, kind);
   }
 
-  isWalkable(x: number, y: number): boolean {
-    return WALKABLE_TILES.has(this.tileByte(x, y));
+  isWalkable(x: number, y: number, world: string = OVERWORLD): boolean {
+    return WALKABLE_TILES.has(this.tileByte(x, y, world));
   }
 
   /**
@@ -266,12 +399,12 @@ export class World {
    * spatial-sleeping probe features lean on: an entity whose whole
    * neighborhood holds no player can be skipped entirely for that tick.
    */
-  hasPlayerNear(x: number, y: number, radius: number): boolean {
+  hasPlayerNear(x: number, y: number, radius: number, world: string = OVERWORLD): boolean {
     const { cx, cy } = worldToChunk(x, y);
     const chunkRadius = ((radius + CHUNK_SIZE - 1) / CHUNK_SIZE) | 0;
     for (let dcy = -chunkRadius; dcy <= chunkRadius; dcy++) {
       for (let dcx = -chunkRadius; dcx <= chunkRadius; dcx++) {
-        const set = this.entityChunks.get(chunkKey(cx + dcx, cy + dcy));
+        const set = this.entityChunks.get(this.indexKey(world, cx + dcx, cy + dcy));
         if (!set) continue;
         for (const id of set) {
           const entity = this.entities.get(id);
@@ -288,15 +421,19 @@ export class World {
    * instead of the whole entity store. This is the spatial-event probe:
    * emitNear() delivers to exactly these entities and no others.
    */
-  entityIdsInRadius(x: number, y: number, radius: number): Set<number> {
+  entityIdsInRadius(
+    x: number,
+    y: number,
+    radius: number,
+    world: string = OVERWORLD,
+  ): Set<number> {
     const result = new Set<number>();
     const chunkRadius = ((radius + CHUNK_SIZE - 1) / CHUNK_SIZE) | 0;
     const { cx, cy } = worldToChunk(x, y);
 
     for (let dcx = -chunkRadius; dcx <= chunkRadius; dcx++) {
       for (let dcy = -chunkRadius; dcy <= chunkRadius; dcy++) {
-        const key = chunkKey(cx + dcx, cy + dcy);
-        const ids = this.entityChunks.get(key);
+        const ids = this.entityChunks.get(this.indexKey(world, cx + dcx, cy + dcy));
         if (!ids) continue;
         for (const id of ids) {
           const entity = this.get(id);
@@ -320,8 +457,8 @@ export class World {
    * immediately (when the world was constructed with one), so generated
    * content survives restarts and the db mirrors exactly what was explored.
    */
-  ensureChunk(cx: number, cy: number): Uint8Array {
-    return this.tiles.ensure(cx, cy);
+  ensureChunk(cx: number, cy: number, world: string = OVERWORLD): Uint8Array {
+    return this.store(world).ensure(cx, cy);
   }
 
   /**
@@ -352,7 +489,7 @@ export class World {
     }
     if (writes.length > 0 || deletes.length > 0) saveEntities(db, writes, deletes);
     this.dirty.clear();
-    this.tiles.flushDirty(db);
+    for (const store of this.stores.values()) store.flushDirty(db);
   }
 
   /**
@@ -363,9 +500,14 @@ export class World {
    */
   loadFromRows(rows: EntityRow[]): void {
     for (const row of rows) {
-      let parsed: { x: unknown; y: unknown; components: unknown };
+      let parsed: { x: unknown; y: unknown; components: unknown; world?: unknown };
       try {
-        parsed = JSON.parse(row.data) as { x: unknown; y: unknown; components: unknown };
+        parsed = JSON.parse(row.data) as {
+          x: unknown;
+          y: unknown;
+          components: unknown;
+          world?: unknown;
+        };
       } catch {
         console.warn(`[world] entity ${row.id}: corrupt data blob - skipping`);
         continue;
@@ -379,12 +521,16 @@ export class World {
         console.warn(`[world] entity ${row.id}: data blob has no x/y/components - skipping`);
         continue;
       }
+      // Rows written before worlds existed have no `world`; they are, by
+      // definition, in the overworld. That is the entire entity migration.
+      const world = typeof parsed.world === 'string' ? parsed.world : OVERWORLD;
       this.entities.set(row.id, {
         id: row.id,
         kind: row.kind,
         x: parsed.x,
         y: parsed.y,
         components: parsed.components as Record<string, unknown>,
+        world,
         chunk: '',
       });
       this.updateEntityChunk(row.id, parsed.x, parsed.y);
@@ -400,14 +546,22 @@ export class World {
    * current chunk layout are skipped with a warning.
    */
   loadChunks(chunks: Map<string, Uint8Array>): void {
-    this.tiles.load(chunks);
+    // Every persisted world gets a store and is offered every row; each takes
+    // only the keys carrying its own prefix (bare keys are the overworld's).
+    for (const key of chunks.keys()) {
+      const colon = key.lastIndexOf(':');
+      if (colon > 0) this.store(key.slice(0, colon));
+    }
+    for (const store of this.stores.values()) store.load(chunks);
     // Restored chunks are decoration CANDIDATES, not automatically decorated.
     // tools/reset-world.mjs generates and persists the spawn chunks before
     // any server runs, so inferring "decorated" from "present in the db"
     // would leave exactly the ground players start on permanently bare.
     // Whether a chunk was decorated is a separate, explicitly recorded fact
     // (see hasDecoratedChunk); offering it here costs one kv read.
-    this.tiles.offerForDecoration(chunks.keys());
+    this.store(OVERWORLD).offerForDecoration(
+      [...chunks.keys()].filter((k) => k.lastIndexOf(':') < 0),
+    );
   }
 
   /**
@@ -427,7 +581,7 @@ export class World {
   private updateEntityChunk(id: number, x: number, y: number): void {
     const entity = this.entities.get(id);
     if (!entity) return;
-    const key = chunkKey(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT);
+    const key = this.indexKey(entity.world, x >> CHUNK_SHIFT, y >> CHUNK_SHIFT);
     if (entity.chunk === key) return;
     const oldSet = this.entityChunks.get(entity.chunk);
     if (oldSet) {

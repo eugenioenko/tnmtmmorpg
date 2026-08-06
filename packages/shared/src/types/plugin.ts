@@ -31,7 +31,12 @@ export interface WorldAPI {
    */
   getSet(key: string, value?: string): string | undefined;
   /** Spawn an entity of `kind` at a position; returns its id. */
-  spawn(kind: string, pos: WorldCoord, components?: Record<string, unknown>): number;
+  spawn(
+    kind: string,
+    pos: WorldCoord,
+    components?: Record<string, unknown>,
+    world?: string,
+  ): number;
   /** A detached snapshot of an entity's state, or undefined if it is gone. */
   get(id: number): EntityState | undefined;
   /**
@@ -63,6 +68,21 @@ export interface WorldAPI {
    * Step one tile at a time if you want walls to actually stop you.
    */
   move(entityId: number, x: number, y: number): boolean;
+  /**
+   * Move an entity into ANOTHER world. This is the door, the portal and the
+   * trip home — the only call that changes which world an entity is in.
+   *
+   * Unlike move() there is no walkability check: the caller chooses the
+   * arrival tile, because only it knows where the far side of its own door
+   * should be. Returns false if the entity is gone or nothing mints that
+   * world id.
+   *
+   * World ids are either declared (the overworld and the themed worlds) or
+   * derived (`interior:<x>,<y>` for the room behind a door). An interior
+   * does not exist until somebody travels into it, and costs nothing until
+   * then.
+   */
+  travel(entityId: number, world: string, x: number, y: number): boolean;
   despawn(id: number): void;
   /** Every entity carrying all of the named components (detached copies). */
   query(...componentNames: string[]): EntityState[];
@@ -72,23 +92,23 @@ export interface WorldAPI {
    * instead of a scan of the whole world — reach for this instead of
    * filtering query() by distance.
    */
-  queryNear(x: number, y: number, radius: number): EntityState[];
+  queryNear(x: number, y: number, radius: number, world?: string): EntityState[];
   /**
    * True when a player entity is within `radius` tiles (Chebyshev) of
    * (x, y). Same index as queryNear but it stops at the first hit and
    * allocates nothing, which is what makes "only simulate near players"
    * affordable to check per entity per tick.
    */
-  hasPlayerNear(x: number, y: number, radius: number): boolean;
+  hasPlayerNear(x: number, y: number, radius: number, world?: string): boolean;
   /** Tile kind at (x, y); out-of-bounds reads as 'water'. */
-  tile(x: number, y: number): string;
+  tile(x: number, y: number, world?: string): string;
   /**
    * Can an entity stand on (x, y)? The same rule move() enforces — ask
    * rather than re-deriving walkability from tile(), so a feature's idea of
    * what blocks movement can never drift from core's.
    */
-  walkable(x: number, y: number): boolean;
-  setTile(x: number, y: number, kind: string): void;
+  walkable(x: number, y: number, world?: string): boolean;
+  setTile(x: number, y: number, kind: string, world?: string): void;
   /** Hand `count` of an item to an entity; returns how many were NOT accepted. */
   give(entityId: number, itemId: string, count: number): number;
   /** Every registered item definition carrying a tag, across all features. */
@@ -102,7 +122,14 @@ export interface WorldAPI {
    * `radius` tiles (Chebyshev) of (x, y), with the receiving entity's id
    * merged into the payload (payload fields are preserved).
    */
-  emitNear(x: number, y: number, radius: number, event: string, payload: unknown): void;
+  emitNear(
+    x: number,
+    y: number,
+    radius: number,
+    event: string,
+    payload: unknown,
+    world?: string,
+  ): void;
   /** Seeded, deterministic random in [0, 1). Math.random is banned by lint. */
   rng(): number;
   log: (msg: string) => void;

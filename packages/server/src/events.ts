@@ -1,3 +1,4 @@
+import { OVERWORLD } from '@game/shared';
 import type { World } from './world.ts';
 
 /**
@@ -15,6 +16,8 @@ export interface SpatialEvent {
   x: number;
   y: number;
   radius: number;
+  /** Which world the event happened in; it never crosses into another. */
+  world: string;
 }
 
 /**
@@ -63,8 +66,15 @@ export class EventBus {
    * outside the radius never hear it — a damage event at (5000, 5000)
    * costs nothing for the population at (0, 0).
    */
-  emitNear(x: number, y: number, radius: number, event: string, payload: unknown): void {
-    this.spatialQueue.push({ event, payload, x, y, radius });
+  emitNear(
+    x: number,
+    y: number,
+    radius: number,
+    event: string,
+    payload: unknown,
+    world: string = OVERWORLD,
+  ): void {
+    this.spatialQueue.push({ event, payload, x, y, radius, world });
   }
 
   /** Deliver every queued event to its listeners, in queue order. */
@@ -110,7 +120,7 @@ export class EventBus {
       if (!next) continue;
       const listeners = this.listeners.get(next.event);
       if (!listeners || listeners.length === 0) continue;
-      const nearbyIds = world.entityIdsInRadius(next.x, next.y, next.radius);
+      const nearbyIds = world.entityIdsInRadius(next.x, next.y, next.radius, next.world);
       for (const entityId of nearbyIds) {
         const entity = world.get(entityId);
         if (!entity) continue;

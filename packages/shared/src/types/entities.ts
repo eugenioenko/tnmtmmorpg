@@ -7,6 +7,11 @@ export interface EntityState {
   kind: string;
   x: number;
   y: number;
+  /**
+   * Which world the entity is in. Absent means the overworld, so snapshots
+   * and features written before worlds existed keep their meaning.
+   */
+  world?: string;
   components: Record<string, unknown>;
 }
 

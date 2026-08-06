@@ -7,6 +7,7 @@ import type {
   RecipeInput,
   WorldCoord,
 } from '@game/shared';
+import { OVERWORLD } from '@game/shared';
 import type { Entity, World } from '../world.ts';
 import { giveItem, isInventory, removeItem } from './inventory.ts';
 
@@ -158,8 +159,10 @@ function giveOrDrop(
 ): void {
   const leftover = giveItem(ctx, entityId, itemId, count);
   if (leftover > 0) {
-    const tile = freeDropTile(ctx, fallbackPos);
-    ctx.world.spawn('item', tile, { itemDrop: { itemId, count: leftover } });
+    // Drop into the crafter's own world, not the overworld by default.
+    const inWorld = ctx.world.get(entityId)?.world ?? OVERWORLD;
+    const tile = freeDropTile(ctx, fallbackPos, inWorld);
+    ctx.world.spawn('item', tile, { itemDrop: { itemId, count: leftover } }, inWorld);
     console.warn(
       `[crafting] ${leftover}x '${itemId}' did not fit entity ${entityId} - dropped at (${tile.x}, ${tile.y})`,
     );
@@ -167,8 +170,15 @@ function giveOrDrop(
 }
 
 /** The nearest tile to `pos` that holds no ground item entity. */
-function freeDropTile(ctx: CraftingContext, pos: WorldCoord): WorldCoord {
-  const occupied = new Set(ctx.world.query('itemDrop').map((e) => `${e.x},${e.y}`));
+function freeDropTile(ctx: CraftingContext, pos: WorldCoord, inWorld: string): WorldCoord {
+  // Occupancy is per-world: a drop at (5,5) in a cave does not block (5,5)
+  // in the overworld.
+  const occupied = new Set(
+    ctx.world
+      .query('itemDrop')
+      .filter((e) => e.world === inWorld)
+      .map((e) => `${e.x},${e.y}`),
+  );
   const candidates: WorldCoord[] = [
     pos,
     { x: pos.x + 1, y: pos.y },
@@ -177,7 +187,7 @@ function freeDropTile(ctx: CraftingContext, pos: WorldCoord): WorldCoord {
     { x: pos.x, y: pos.y - 1 },
   ];
   for (const tile of candidates) {
-    if (ctx.world.isWalkable(tile.x, tile.y) && !occupied.has(`${tile.x},${tile.y}`)) {
+    if (ctx.world.isWalkable(tile.x, tile.y, inWorld) && !occupied.has(`${tile.x},${tile.y}`)) {
       return tile;
     }
   }

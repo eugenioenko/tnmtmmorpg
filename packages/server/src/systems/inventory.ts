@@ -41,7 +41,14 @@ function isItemDrop(value: unknown): value is ItemDropComponent {
 function groundItemAt(world: World, entity: Entity | undefined): Entity | undefined {
   if (!entity) return undefined;
   for (const candidate of world.query('itemDrop')) {
-    if (candidate.kind === 'item' && candidate.x === entity.x && candidate.y === entity.y) {
+    // Same tile AND same world: an item lying at (5,5) in a cave must not be
+    // pickable by someone standing at (5,5) outside it.
+    if (
+      candidate.kind === 'item' &&
+      candidate.world === entity.world &&
+      candidate.x === entity.x &&
+      candidate.y === entity.y
+    ) {
       return candidate;
     }
   }
@@ -187,7 +194,12 @@ export function dropItem(ctx: InventoryContext, entityId: number, slotIndex: num
     return moved;
   }
 
-  ctx.world.spawn('item', { x: entity.x, y: entity.y }, { itemDrop: { itemId, count } });
+  ctx.world.spawn(
+    'item',
+    { x: entity.x, y: entity.y },
+    { itemDrop: { itemId, count } },
+    entity.world,
+  );
   slot.itemId = '';
   slot.count = 0;
   ctx.world.markDirty(entityId);

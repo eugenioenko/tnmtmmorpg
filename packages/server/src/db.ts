@@ -103,7 +103,7 @@ export function saveEntities(
         e.id,
         e.kind,
         e.chunk,
-        JSON.stringify({ x: e.x, y: e.y, components: e.components }),
+        JSON.stringify({ x: e.x, y: e.y, world: e.world, components: e.components }),
       );
     }
     for (const id of deleteIds) remove.run(id);
@@ -119,7 +119,12 @@ export function saveEntity(db: DatabaseSync, entity: Entity): void {
     | { rev: number }
     | undefined;
   const rev = (prev?.rev ?? 0) + 1;
-  const data = JSON.stringify({ x: entity.x, y: entity.y, components: entity.components });
+  const data = JSON.stringify({
+    x: entity.x,
+    y: entity.y,
+    world: entity.world,
+    components: entity.components,
+  });
   db.prepare(
     'INSERT OR REPLACE INTO entities (id, kind, chunk, data, rev) VALUES (?, ?, ?, ?, ?)',
   ).run(entity.id, entity.kind, entity.chunk, data, rev);
