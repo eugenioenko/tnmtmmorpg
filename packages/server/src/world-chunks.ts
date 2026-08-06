@@ -10,6 +10,13 @@ import {
   TILE_SNOW,
   TILE_SWAMP,
   TILE_WATER,
+  TILE_FLOOR,
+  TILE_VOID,
+  TILE_WALL,
+  OVERWORLD,
+  DEFAULT_GEN,
+  type GenParams,
+  type WorldSpec,
 } from '@game/shared';
 import { saveChunk } from './db.ts';
 
@@ -363,6 +370,7 @@ export function generateChunk(
   cy: number,
   worldWidth: number,
   worldHeight: number,
+  gen: GenParams = DEFAULT_GEN,
 ): Uint8Array {
   const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
@@ -388,20 +396,24 @@ export function generateChunk(
       const ny = 1 - wy / (worldHeight - 1);
       const climate = (nx + ny) / 2 + (fbm(seed + 20000, wx * 0.008, wy * 0.008, 2) - 0.5) * 0.22;
 
+      // The same ladder for every world; only the thresholds differ. Raising
+      // gen.water floods a world, lowering gen.snow freezes it — the terrain
+      // SHAPE stays identical, which is what makes the themed worlds read as
+      // the same kind of place under different weather.
       let kind: number;
-      if (elevation < 0.33) {
+      if (elevation < gen.water) {
         // Deep water — oceans and long lakes
         kind = TILE_WATER;
-      } else if (elevation < 0.43) {
+      } else if (elevation < gen.sand) {
         // Beach band at the water's edge
         kind = TILE_SAND;
-      } else if (elevation > 0.74) {
+      } else if (elevation > gen.mountain) {
         // Mountain ranges
         kind = TILE_MOUNTAIN;
-      } else if (climate > 0.78) {
+      } else if (climate > gen.snow) {
         // Polar region — the top-right corner of the map
         kind = TILE_SNOW;
-      } else if (elevation > 0.7 && climate > 0.62) {
+      } else if (elevation > gen.mountain - 0.04 && climate > gen.snow - 0.16) {
         // Snow-capped shoulders below the peaks, in the cold half only
         kind = TILE_SNOW;
       } else if (climate < 0.22) {
@@ -410,13 +422,13 @@ export function generateChunk(
       } else if (climate < 0.34 && moisture < 0.5) {
         // Arid scrubland: the buffer between desert and temperate
         kind = TILE_DIRT;
-      } else if (moisture > 0.55 && elevation < 0.5) {
+      } else if (moisture > gen.forest + 0.1 && elevation < 0.5) {
         // Wet lowlands → swamp
         kind = TILE_SWAMP;
-      } else if (moisture > 0.45) {
+      } else if (moisture > gen.forest) {
         // Moist regions → forest
         kind = TILE_FOREST;
-      } else if (moisture < 0.28) {
+      } else if (moisture < gen.dirt) {
         // Dry regions → dirt/scrubland
         kind = TILE_DIRT;
       } else {
@@ -432,6 +444,198 @@ export function generateChunk(
   smoothChunk(data);
   fillSmallWater(data);
   drawRoads(seed, cx, cy, data);
+  // Last: the arrival plaza must survive every pass above it.
+  stampPortalPlaza(cx, cy, worldWidth, worldHeight, data);
+
+  return data;
+}
+
+
+
+/**
+ * Tiles either side of the world centre that are guaranteed to be dry land.
+ *
+ * Portals arrive at the centre of every world, and the generator has no idea
+ * that matters: the snow and verdant worlds both generated deep water for the
+ * whole area, so travelling there put players in the middle of a lake with no
+ * walkable tile in reach. They could not move, and the return pad was
+ * underwater too, so it was a one-way trip into a wall.
+ *
+ * Six tiles clears the pad ring (which sits two out) with room to stand.
+ */
+const PORTAL_PLAZA_RADIUS = 6;
+
+/**
+ * Force the centre of the world to be walkable land.
+ *
+ * Runs last, after smoothing, pond-filling and roads, so nothing downstream
+ * can flood it again. The tile written is plain grass, which every palette
+ * re-skins — the plaza reads as ash in the fire world and packed snow in the
+ * frozen one rather than a patch of lawn.
+ */
+function stampPortalPlaza(
+  cx: number,
+  cy: number,
+  worldWidth: number,
+  worldHeight: number,
+  data: Uint8Array,
+): void {
+  const span = PORTAL_PLAZA_RADIUS * 2 + 1;
+  // A world too small to hold the plaza would have it wrap onto itself and
+  // pave everything; those worlds are interiors, which never come through here.
+  if (worldWidth < span || worldHeight < span) return;
+
+  const centreX = (worldWidth / 2) | 0;
+  const centreY = (worldHeight / 2) | 0;
+  const minX = centreX - PORTAL_PLAZA_RADIUS;
+  const maxX = centreX + PORTAL_PLAZA_RADIUS;
+  const minY = centreY - PORTAL_PLAZA_RADIUS;
+  const maxY = centreY + PORTAL_PLAZA_RADIUS;
+
+  // Does this chunk overlap the plaza at all? Almost never, so leave early.
+  const chunkMinX = cx * CHUNK_SIZE;
+  const chunkMinY = cy * CHUNK_SIZE;
+  const chunkMaxX = chunkMinX + CHUNK_SIZE - 1;
+  const chunkMaxY = chunkMinY + CHUNK_SIZE - 1;
+  if (chunkMaxX < minX || chunkMinX > maxX || chunkMaxY < minY || chunkMinY > maxY) return;
+
+  const fromX = minX > chunkMinX ? minX : chunkMinX;
+  const toX = maxX < chunkMaxX ? maxX : chunkMaxX;
+  const fromY = minY > chunkMinY ? minY : chunkMinY;
+  const toY = maxY < chunkMaxY ? maxY : chunkMaxY;
+  for (let wy = fromY; wy <= toY; wy++) {
+    for (let wx = fromX; wx <= toX; wx++) {
+      data[(wy - chunkMinY) * CHUNK_SIZE + (wx - chunkMinX)] = TILE_GRASS;
+    }
+  }
+}
+
+/**
+ * Interior generator: a room floating in nothing.
+ *
+ * Unlike the terrain generator, this fills the chunk with VOID and then
+ * carves floor into it, so everything outside the room renders black and
+ * blocks movement. A building is a lit room in an unlit space, not a patch
+ * of countryside with walls drawn on it.
+ *
+ * The shape is 1-3 overlapping rectangles, which is what makes rooms read as
+ * built rather than generated: two overlapping rectangles give an L, three
+ * give a T or a cross, and the overlap is unioned so there are never
+ * interior walls cutting the space in half. Every rectangle is enclosed by a
+ * WALL ring, then the ring is re-cleared wherever another rectangle's floor
+ * runs through it — otherwise the wings would be walled off from each other.
+ *
+ * Deterministic from the seed, which is derived from the door's position, so
+ * the same door always opens onto the same room and nothing has to be stored.
+ */
+export function generateRooms(
+  seed: number,
+  cx: number,
+  cy: number,
+  worldWidth: number,
+  worldHeight: number,
+): Uint8Array {
+  const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
+  data.fill(TILE_VOID);
+
+  // Interiors are one chunk; anything past the world's own size is void.
+  if (cx !== 0 || cy !== 0) return data;
+
+  // Small deterministic LCG; Math.random is banned by lint and would break
+  // the guarantee that a door always opens onto the same room.
+  let state = seed >>> 0 || 1;
+  const next = (): number => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const between = (lo: number, hi: number): number => lo + ~~(next() * (hi - lo + 1));
+
+  const limit = worldWidth < CHUNK_SIZE ? worldWidth : CHUNK_SIZE;
+  const limitY = worldHeight < CHUNK_SIZE ? worldHeight : CHUNK_SIZE;
+
+  interface Rect {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }
+  const rects: Rect[] = [];
+
+  // The main hall, roughly centred so the arrival tile is always inside it.
+  const mainW = between(10, 18);
+  const mainH = between(8, 14);
+  const mainX = ~~((limit - mainW) / 2);
+  const mainY = ~~((limitY - mainH) / 2);
+  rects.push({ x0: mainX, y0: mainY, x1: mainX + mainW - 1, y1: mainY + mainH - 1 });
+
+  // Wings, each overlapping the hall so the union stays one connected space.
+  const wings = between(0, 2);
+  for (let i = 0; i < wings; i++) {
+    const w = between(6, 12);
+    const h = between(5, 10);
+    const horizontal = next() < 0.5;
+    let x0: number;
+    let y0: number;
+    if (horizontal) {
+      x0 = next() < 0.5 ? mainX - w + 2 : mainX + mainW - 2;
+      y0 = mainY + between(0, mainH > h ? mainH - h : 0);
+    } else {
+      x0 = mainX + between(0, mainW > w ? mainW - w : 0);
+      y0 = next() < 0.5 ? mainY - h + 2 : mainY + mainH - 2;
+    }
+    // Keep a 1-tile margin so the wall ring always fits inside the chunk.
+    if (x0 < 1) x0 = 1;
+    if (y0 < 1) y0 = 1;
+    if (x0 + w > limit - 1) x0 = limit - 1 - w;
+    if (y0 + h > limitY - 1) y0 = limitY - 1 - h;
+    if (x0 < 1 || y0 < 1) continue;
+    rects.push({ x0, y0, x1: x0 + w - 1, y1: y0 + h - 1 });
+  }
+
+  const put = (x: number, y: number, kind: number): void => {
+    if (x < 0 || y < 0 || x >= CHUNK_SIZE || y >= CHUNK_SIZE) return;
+    data[y * CHUNK_SIZE + x] = kind;
+  };
+  const at = (x: number, y: number): number => {
+    if (x < 0 || y < 0 || x >= CHUNK_SIZE || y >= CHUNK_SIZE) return TILE_VOID;
+    return data[y * CHUNK_SIZE + x];
+  };
+
+  // Walls first, then floor over the top: any wall that falls inside another
+  // rectangle's floor is overwritten, which is what joins the wings.
+  for (const r of rects) {
+    for (let x = r.x0 - 1; x <= r.x1 + 1; x++) {
+      put(x, r.y0 - 1, TILE_WALL);
+      put(x, r.y1 + 1, TILE_WALL);
+    }
+    for (let y = r.y0 - 1; y <= r.y1 + 1; y++) {
+      put(r.x0 - 1, y, TILE_WALL);
+      put(r.x1 + 1, y, TILE_WALL);
+    }
+  }
+  for (const r of rects) {
+    for (let y = r.y0; y <= r.y1; y++) {
+      for (let x = r.x0; x <= r.x1; x++) put(x, y, TILE_FLOOR);
+    }
+  }
+
+  // Any wall with no floor beside it is a leftover from an overlap and would
+  // read as a stray block hanging in the void; return it to void.
+  for (let y = 0; y < CHUNK_SIZE; y++) {
+    for (let x = 0; x < CHUNK_SIZE; x++) {
+      if (at(x, y) !== TILE_WALL) continue;
+      let touchesFloor = false;
+      for (let dy = -1; dy <= 1 && !touchesFloor; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (at(x + dx, y + dy) === TILE_FLOOR) {
+            touchesFloor = true;
+            break;
+          }
+        }
+      }
+      if (!touchesFloor) put(x, y, TILE_VOID);
+    }
+  }
 
   return data;
 }
@@ -462,12 +666,43 @@ export class ChunkStore {
   private readonly width: number;
   private readonly height: number;
   private readonly seed: number;
+  /** Which world this store holds; decides the generator and the db key. */
+  private readonly spec: WorldSpec;
 
-  constructor(db: DatabaseSync | undefined, width: number, height: number, seed: number) {
+  constructor(db: DatabaseSync | undefined, spec: WorldSpec) {
     this.db = db;
-    this.width = width;
-    this.height = height;
-    this.seed = seed;
+    this.spec = spec;
+    this.width = spec.width;
+    this.height = spec.height;
+    this.seed = spec.seed;
+  }
+
+  /**
+   * The db row key for a chunk of THIS world.
+   *
+   * The overworld deliberately keeps the bare 'cx,cy' form it has always
+   * used, so every chunk row written before worlds existed still loads and
+   * no player's terrain edits are lost. Only other worlds carry a prefix.
+   * That is the whole migration — there isn't one.
+   */
+  private storageKey(cx: number, cy: number): string {
+    const key = chunkKey(cx, cy);
+    return this.spec.id === OVERWORLD ? key : `${this.spec.id}:${key}`;
+  }
+
+  /** Inverse of storageKey: the local key, or undefined if another world's. */
+  private localKey(storage: string): string | undefined {
+    const colon = storage.lastIndexOf(':');
+    if (this.spec.id === OVERWORLD) return colon < 0 ? storage : undefined;
+    if (colon < 0) return undefined;
+    return storage.slice(0, colon) === this.spec.id ? storage.slice(colon + 1) : undefined;
+  }
+
+  /** This world's generator, chosen by its spec. */
+  private generate(cx: number, cy: number): Uint8Array {
+    return this.spec.generator === 'rooms'
+      ? generateRooms(this.seed, cx, cy, this.width, this.height)
+      : generateChunk(this.seed, cx, cy, this.width, this.height, this.spec.gen);
   }
 
   /** Number of tile chunks currently loaded in memory. */
@@ -526,9 +761,9 @@ export class ChunkStore {
     const key = chunkKey(cx, cy);
     let data = this.chunks.get(key);
     if (data) return data;
-    data = generateChunk(this.seed, cx, cy, this.width, this.height);
+    data = this.generate(cx, cy);
     this.chunks.set(key, data);
-    if (this.db) saveChunk(this.db, key, data);
+    if (this.db) saveChunk(this.db, this.storageKey(cx, cy), data);
     this.fresh.push({ cx, cy });
     return data;
   }
@@ -561,7 +796,11 @@ export class ChunkStore {
   flushDirty(db: DatabaseSync): void {
     for (const key of this.dirtyChunks) {
       const data = this.chunks.get(key);
-      if (data) saveChunk(db, key, data);
+      if (!data) continue;
+      const comma = key.indexOf(',');
+      const cx = Number(key.slice(0, comma));
+      const cy = Number(key.slice(comma + 1));
+      saveChunk(db, this.storageKey(cx, cy), data);
     }
     this.dirtyChunks.clear();
   }
@@ -572,16 +811,19 @@ export class ChunkStore {
    */
   load(chunks: Map<string, Uint8Array>): void {
     let loaded = 0;
-    for (const [key, data] of chunks) {
+    for (const [storage, data] of chunks) {
+      // Every world is offered every row; take only our own.
+      const key = this.localKey(storage);
+      if (key === undefined) continue;
       if (data.length !== CHUNK_SIZE * CHUNK_SIZE) {
-        console.warn(`[world] chunk ${key}: unexpected size ${data.length} - skipping`);
+        console.warn(`[world] chunk ${storage}: unexpected size ${data.length} - skipping`);
         continue;
       }
       this.chunks.set(key, data);
       loaded++;
     }
     if (loaded > 0) {
-      console.log(`[world] restored ${loaded} tile chunk(s)`);
+      console.log(`[world] ${this.spec.id}: restored ${loaded} tile chunk(s)`);
     }
   }
 }

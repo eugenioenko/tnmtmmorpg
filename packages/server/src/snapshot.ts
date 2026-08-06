@@ -44,6 +44,8 @@ interface SessionState {
   /** Key "x,y" -> kind, for every non-grass tile the client was told about. */
   lastTiles: Map<string, string>;
   tickOfLastFull: number;
+  /** Which world the last snapshot described; a change forces a full resync. */
+  world: string;
 }
 
 /** A fresh full snapshot every 300 ticks (30 seconds at 10Hz) resyncs the client. */
@@ -91,18 +93,44 @@ function viewportOf(entity: Entity, view?: { x: number; y: number }): Viewport {
  * keyed map. Grass (the world default) is never sent: the client renders
  * grass for any coordinate it has not been told about.
  */
-function scanTiles(world: World, vp: Viewport): { tiles: TileState[]; byKey: Map<string, string> } {
+function scanTiles(
+  world: World,
+  vp: Viewport,
+  inWorld: string,
+): { tiles: TileState[]; byKey: Map<string, string> } {
   const tiles: TileState[] = [];
   const byKey = new Map<string, string>();
+  // Grass is the client's default for anything it was not told about, which
+  // is wrong inside a building: there, "not told about" must read as void.
+  // So interiors send every tile and skip nothing.
+  const spec = world.spec(inWorld);
+  const skip = spec?.generator === 'rooms' ? null : 'grass';
+  const w = spec?.width ?? 0;
+  const h = spec?.height ?? 0;
+
   for (let y = vp.minY; y <= vp.maxY; y++) {
     for (let x = vp.minX; x <= vp.maxX; x++) {
-      // World wraps like a torus — world.tile() already wraps coordinates.
-      const kind = world.tile(x, y);
-      if (kind === 'grass') continue;
-      // Use the local (viewport-space) coordinates so the client places
-      // tiles where they appear, even when they come from the opposite edge.
-      tiles.push({ x, y, kind });
-      byKey.set(`${x},${y}`, kind);
+      // Emit WRAPPED coordinates. The viewport is a rectangle around the
+      // player and freely runs negative or past the far edge — the world is
+      // a torus, so those are real tiles, but their raw coordinates are not
+      // encodable: tile x and y go on the wire as uint16, and writeU16(-12)
+      // throws. That killed the whole snapshot for that session, and since
+      // the client ignored frames it could not decode, the screen simply
+      // stopped updating with nothing to say why.
+      //
+      // It bites hardest in a small world (a 48-tile interior inside a
+      // 73-tile viewport is always partly out of range) but the overworld
+      // has the same edge at x or y near 0.
+      const wx = w > 0 ? ((x % w) + w) % w : x;
+      const wy = h > 0 ? ((y % h) + h) % h : y;
+      const kind = world.tile(wx, wy, inWorld);
+      if (skip !== null && kind === skip) continue;
+      // byKey doubles as the dedupe: a world narrower than the viewport
+      // wraps onto itself, and the same tile must only be sent once.
+      const key = `${wx},${wy}`;
+      if (byKey.has(key)) continue;
+      byKey.set(key, kind);
+      tiles.push({ x: wx, y: wy, kind });
     }
   }
   return { tiles, byKey };
@@ -113,14 +141,15 @@ function entitiesInViewport(world: World, entity: Entity, vp: Viewport): EntityS
   // Centre the chunk scan on the VIEWPORT, not the entity: with the camera
   // panned away, entities near the view edge live in chunks the player's own
   // chunk ring does not reach.
-  void entity;
   // Scan the chunk range covering the viewport; entity coordinates are
   // already wrapped (moveEntity normalises them), so the spatial-index
   // ring around the player's chunk catches everything nearby, including
   // entities that just wrapped across an edge.
   const chunk = worldToChunk((vp.minX + vp.maxX) >> 1, (vp.minY + vp.maxY) >> 1);
+  // Scoped to the viewer's world, so a player standing at (5000,5000) in the
+  // fire world never sees the crowd standing on the same tile at home.
   return world
-    .entitiesInView(chunk.cx, chunk.cy, VIEW_RADIUS_X, VIEW_RADIUS_Y)
+    .entitiesInView(chunk.cx, chunk.cy, VIEW_RADIUS_X, VIEW_RADIUS_Y, entity.world)
     .filter((e) => e.x >= vp.minX && e.x <= vp.maxX && e.y >= vp.minY && e.y <= vp.maxY)
     .map((e) => ({ id: e.id, kind: e.kind, x: e.x, y: e.y, components: e.components }));
 }
@@ -148,10 +177,13 @@ export function buildSnapshot(
   const vp = viewportOf(entity, view);
   const entities = entitiesInViewport(world, entity, vp);
   const entityIds = new Set(entities.map((e) => e.id));
-  const { tiles: tileList, byKey: tileMap } = scanTiles(world, vp);
+  const { tiles: tileList, byKey: tileMap } = scanTiles(world, vp, entity.world);
 
   const prev = sessions.get(sessionId);
-  if (!prev || tick - prev.tickOfLastFull >= FULL_RESYNC_TICKS) {
+  // Changing world invalidates every tile and entity the client holds, so it
+  // has to be a full snapshot — a delta against the old world would leave
+  // the previous map's tiles on screen underneath the new one.
+  if (!prev || prev.world !== entity.world || tick - prev.tickOfLastFull >= FULL_RESYNC_TICKS) {
     const full: FullSnapshot = {
       t: 'full',
       tick,
@@ -159,6 +191,7 @@ export function buildSnapshot(
       tiles: tileList,
       playerX: entity.x,
       playerY: entity.y,
+      world: entity.world,
     };
     if (disabledFeatures.length > 0) full.disabledFeatures = disabledFeatures;
     sessions.set(sessionId, {
@@ -166,6 +199,7 @@ export function buildSnapshot(
       lastEntityIds: entityIds,
       lastTiles: tileMap,
       tickOfLastFull: tick,
+      world: entity.world,
     });
     return full;
   }
@@ -204,6 +238,7 @@ export function buildSnapshot(
     removedTiles,
     playerX: entity.x,
     playerY: entity.y,
+    world: entity.world,
   };
   if (disabledFeatures.length > 0) delta.disabledFeatures = disabledFeatures;
   sessions.set(sessionId, {
@@ -211,6 +246,7 @@ export function buildSnapshot(
     lastEntityIds: entityIds,
     lastTiles: tileMap,
     tickOfLastFull: prev.tickOfLastFull,
+    world: entity.world,
   });
   return delta;
 }

@@ -1,9 +1,18 @@
 /**
- * Terrain: the 8 tile kinds, their wire bytes, client colors and
- * walkability. The binary protocol (binary.ts) encodes tile kinds through
- * TILE_KIND_BYTE (kind string -> byte); byte 255 is reserved there as an
- * escape for kinds not listed, so the table can grow without a wire-format
- * change.
+ * Terrain: the tile kinds, their wire bytes, client colors and walkability.
+ * The binary protocol (binary.ts) encodes tile kinds through TILE_KIND_BYTE
+ * (kind string -> byte); byte 255 is reserved there as an escape for kinds
+ * not listed, so the table can grow without a wire-format change.
+ *
+ * Bytes 0-7 are outdoor terrain, produced by the noise generator. Bytes 8-10
+ * are interior building blocks, produced by the room generator instead:
+ * interiors are carved rooms surrounded by VOID, which renders black and
+ * blocks movement, so a building reads as a lit room in an unlit space
+ * rather than a patch of countryside.
+ *
+ * Colors here are the OVERWORLD palette. Other worlds re-skin the same bytes
+ * through PALETTES in worlds.ts — a fire world draws byte 1 as lava rather
+ * than water, while collision stays byte-based and identical everywhere.
  */
 
 // Tile kinds
@@ -15,6 +24,12 @@ export const TILE_FOREST = 4;
 export const TILE_DIRT = 5;
 export const TILE_SNOW = 6;
 export const TILE_SWAMP = 7;
+/** Interior: unreachable nothing outside a room. Black, never walkable. */
+export const TILE_VOID = 8;
+/** Interior: the walkable floor of a room. */
+export const TILE_FLOOR = 9;
+/** Interior: the wall enclosing a room. Blocks movement. */
+export const TILE_WALL = 10;
 
 // Byte → string for wire protocol (the binary decoder's table)
 export const TILE_KIND_BYTE: Record<number, string> = {
@@ -26,6 +41,9 @@ export const TILE_KIND_BYTE: Record<number, string> = {
   [TILE_DIRT]: 'dirt',
   [TILE_SNOW]: 'snow',
   [TILE_SWAMP]: 'swamp',
+  [TILE_VOID]: 'void',
+  [TILE_FLOOR]: 'floor',
+  [TILE_WALL]: 'wall',
 };
 
 // Byte → string, same table; kept under the historical name so the binary
@@ -42,6 +60,9 @@ export const TILE_BYTE_BY_KIND: Record<string, number> = {
   dirt: TILE_DIRT,
   snow: TILE_SNOW,
   swamp: TILE_SWAMP,
+  void: TILE_VOID,
+  floor: TILE_FLOOR,
+  wall: TILE_WALL,
 };
 
 // Which tiles you can walk on (water and mountain block movement)
@@ -52,6 +73,7 @@ export const WALKABLE_TILES: Set<number> = new Set([
   TILE_DIRT,
   TILE_SNOW,
   TILE_SWAMP,
+  TILE_FLOOR,
 ]);
 
 // Client colors
@@ -64,6 +86,9 @@ export const TILE_COLORS: Record<number, number> = {
   [TILE_DIRT]: 0x9b7b5c,
   [TILE_SNOW]: 0xe8f0f8,
   [TILE_SWAMP]: 0x5c7a3e,
+  [TILE_VOID]: 0x000000,
+  [TILE_FLOOR]: 0x6b5a48,
+  [TILE_WALL]: 0x3b3129,
 };
 
 // Human-readable names for debug/logging
@@ -76,6 +101,9 @@ export const TILE_NAMES: Record<number, string> = {
   [TILE_DIRT]: 'dirt',
   [TILE_SNOW]: 'snow',
   [TILE_SWAMP]: 'swamp',
+  [TILE_VOID]: 'void',
+  [TILE_FLOOR]: 'floor',
+  [TILE_WALL]: 'wall',
 };
 
 // ── Viewport: the single source of truth for how much world a client sees ──

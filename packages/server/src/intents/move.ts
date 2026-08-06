@@ -56,7 +56,9 @@ export function handleMoveIntent(world: World, entityId: number, intent: MoveInt
   for (let step = dist; step >= 1; step--) {
     const nx = entity.x + delta.x * step;
     const ny = entity.y + delta.y * step;
-    if (!world.isWalkable(nx, ny)) continue;
+    // Walkability in the entity's OWN world: a floor tile inside a building
+    // and a lake in the overworld can share coordinates.
+    if (!world.isWalkable(nx, ny, entity.world)) continue;
     // Move in place; coords wrap around the torus world automatically.
     world.moveEntity(entityId, nx, ny);
     return;

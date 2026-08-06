@@ -37,9 +37,11 @@
  * with a world larger than 65536 on a side (see index.ts).
  *
  * Payload layouts (see each encodeX/decodeX pair):
- *   FullSnapshot   tick u32, playerX u16, playerY u16, entityCount u16,
+ *   FullSnapshot   tick u32, world string, playerX u16, playerY u16,
+ *                  entityCount u16,
  *                  entities, tileCount u16, tiles, disabledFeatures
- *   DeltaSnapshot  tick u32, playerX u16, playerY u16, entityCount u16,
+ *   DeltaSnapshot  tick u32, world string, playerX u16, playerY u16,
+ *                  entityCount u16,
  *                  entities, removedEntityCount u16 + u32 ids, tileCount u16,
  *                  tiles, removedTileCount u16 + coords, disabledFeatures
  *   Welcome        entityId u32, color string
@@ -63,6 +65,7 @@
  */
 
 import {
+  OVERWORLD,
   TILE_BYTE_BY_KIND,
   TILE_KIND_BY_BYTE,
   TILE_SIZE,
@@ -304,6 +307,7 @@ export function encodeFullSnapshot(s: FullSnapshot): Uint8Array {
   const e = new BinaryEncoder();
   e.writeU8(MSG_FULL);
   e.writeU32(s.tick);
+  e.writeString(s.world ?? OVERWORLD);
   e.writeU16(s.playerX);
   e.writeU16(s.playerY);
   e.writeU16(s.entities.length);
@@ -317,6 +321,7 @@ export function encodeFullSnapshot(s: FullSnapshot): Uint8Array {
 export function decodeFullSnapshot(buf: Uint8Array, offset: number): FullSnapshot {
   const d = new BinaryDecoder(buf, offset);
   const tick = d.readU32();
+  const world = d.readString();
   const playerX = d.readU16();
   const playerY = d.readU16();
   const entityCount = d.readU16();
@@ -327,6 +332,9 @@ export function decodeFullSnapshot(buf: Uint8Array, offset: number): FullSnapsho
   for (let i = 0; i < tileCount; i++) tiles.push(decodeTile(d));
   const disabledFeatures = decodeDisabledFeatures(d);
   const full: FullSnapshot = { t: 'full', tick, entities, tiles, playerX, playerY };
+  // Absent means the overworld (see the type). Omitting it there keeps the
+  // decoded object byte-identical to what an older server would have sent.
+  if (world !== OVERWORLD) full.world = world;
   if (disabledFeatures !== undefined) full.disabledFeatures = disabledFeatures;
   return full;
 }
@@ -337,6 +345,7 @@ export function encodeDeltaSnapshot(s: DeltaSnapshot): Uint8Array {
   const e = new BinaryEncoder();
   e.writeU8(MSG_DELTA);
   e.writeU32(s.tick);
+  e.writeString(s.world ?? OVERWORLD);
   e.writeU16(s.playerX);
   e.writeU16(s.playerY);
   e.writeU16(s.entities.length);
@@ -357,6 +366,7 @@ export function encodeDeltaSnapshot(s: DeltaSnapshot): Uint8Array {
 export function decodeDeltaSnapshot(buf: Uint8Array, offset: number): DeltaSnapshot {
   const d = new BinaryDecoder(buf, offset);
   const tick = d.readU32();
+  const world = d.readString();
   const playerX = d.readU16();
   const playerY = d.readU16();
   const entityCount = d.readU16();
@@ -384,6 +394,7 @@ export function decodeDeltaSnapshot(buf: Uint8Array, offset: number): DeltaSnaps
     playerX,
     playerY,
   };
+  if (world !== OVERWORLD) delta.world = world;
   if (disabledFeatures !== undefined) delta.disabledFeatures = disabledFeatures;
   return delta;
 }

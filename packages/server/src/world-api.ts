@@ -5,6 +5,7 @@ import {
   type RecipeDef,
   type WorldAPI,
   type WorldCoord,
+  OVERWORLD,
 } from '@game/shared';
 import type { EventBus } from './events.ts';
 import type { TileKind, World } from './world.ts';
@@ -26,6 +27,7 @@ function toState(entity: {
   kind: string;
   x: number;
   y: number;
+  world?: string;
   components: Record<string, unknown>;
 }): EntityState {
   // Detached copy: reading is safe, mutation is impossible by construction.
@@ -34,6 +36,7 @@ function toState(entity: {
     kind: entity.kind,
     x: entity.x,
     y: entity.y,
+    world: entity.world ?? OVERWORLD,
     components: { ...entity.components },
   };
 }
@@ -67,8 +70,13 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
       return world.getSet(k, v);
     },
 
-    spawn(kind: string, pos: WorldCoord, components: Record<string, unknown> = {}): number {
-      return world.spawn(kind, pos, components);
+    spawn(
+      kind: string,
+      pos: WorldCoord,
+      components: Record<string, unknown> = {},
+      target: string = OVERWORLD,
+    ): number {
+      return world.spawn(kind, pos, components, target);
     },
 
     get(id: number): EntityState | undefined {
@@ -97,10 +105,19 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
     // walk an entity into water, off the map, or out of the index — the
     // worst a wrong destination can do is return false.
     move(entityId: number, x: number, y: number): boolean {
-      if (!world.get(entityId)) return false;
-      if (!world.isWalkable(x, y)) return false;
+      const entity = world.get(entityId);
+      if (!entity) return false;
+      // Walkability is checked in the entity's OWN world: a floor tile in a
+      // building and a lake in the overworld can share coordinates.
+      if (!world.isWalkable(x, y, entity.world)) return false;
       world.moveEntity(entityId, x, y);
       return true;
+    },
+
+    // The only call that changes an entity's world. No walkability check —
+    // see the interface docs: the caller owns the arrival tile.
+    travel(entityId: number, target: string, x: number, y: number): boolean {
+      return world.travelEntity(entityId, target, x, y);
     },
 
     despawn(id: number): void {
@@ -113,9 +130,9 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
 
     // Spatial read: the same chunk index the snapshot builder uses, so
     // "everything near me" costs a few set lookups instead of a full scan.
-    queryNear(x: number, y: number, radius: number): EntityState[] {
+    queryNear(x: number, y: number, radius: number, target: string = OVERWORLD): EntityState[] {
       const result: EntityState[] = [];
-      for (const id of world.entityIdsInRadius(x, y, radius)) {
+      for (const id of world.entityIdsInRadius(x, y, radius, target)) {
         const entity = world.get(id);
         if (entity) result.push(toState(entity));
       }
@@ -124,24 +141,24 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
 
     // The cheap half of queryNear: first hit wins, nothing is allocated.
     // This is what makes per-entity activity checks affordable every tick.
-    hasPlayerNear(x: number, y: number, radius: number): boolean {
-      return world.hasPlayerNear(x, y, radius);
+    hasPlayerNear(x: number, y: number, radius: number, target: string = OVERWORLD): boolean {
+      return world.hasPlayerNear(x, y, radius, target);
     },
 
-    tile(x: number, y: number): string {
-      return world.tile(x, y);
+    tile(x: number, y: number, target: string = OVERWORLD): string {
+      return world.tile(x, y, target);
     },
 
     // Core's collision rule, readable but not settable. move() enforces the
     // same call, so a feature never has to (and never gets to) reimplement it.
-    walkable(x: number, y: number): boolean {
-      return world.isWalkable(x, y);
+    walkable(x: number, y: number, target: string = OVERWORLD): boolean {
+      return world.isWalkable(x, y, target);
     },
 
-    setTile(x: number, y: number, kind: string): void {
-      // Cast: features may introduce tile kinds beyond the 8 core terrain kinds;
+    setTile(x: number, y: number, kind: string, target: string = OVERWORLD): void {
+      // Cast: features may introduce tile kinds beyond the core terrain kinds;
       // unknown kinds render with the client's fallback color.
-      world.setTile(x, y, kind as TileKind);
+      world.setTile(x, y, kind as TileKind, target);
     },
 
     // Phase 5: delegate to the core inventory system; leftover means
@@ -166,8 +183,15 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
       bus.emit(event, payload);
     },
 
-    emitNear(x: number, y: number, radius: number, event: string, payload: unknown): void {
-      bus.emitNear(x, y, radius, event, payload);
+    emitNear(
+      x: number,
+      y: number,
+      radius: number,
+      event: string,
+      payload: unknown,
+      target: string = OVERWORLD,
+    ): void {
+      bus.emitNear(x, y, radius, event, payload, target);
     },
 
     rng(): number {

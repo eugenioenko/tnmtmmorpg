@@ -182,6 +182,19 @@ export class EntityRenderer {
   }
 
   /**
+   * Drop every sprite immediately, without the usual freeze-then-fade.
+   *
+   * Entities that vanish from a snapshot normally linger for FROZEN_MS so a
+   * brief gap does not make things blink. Changing world is not a gap: the
+   * previous world's contents are gone, and leaving them on screen draws the
+   * old map's crowd standing in the new one.
+   */
+  clear(): void {
+    for (const render of this.entities.values()) render.container.destroy({ children: true });
+    this.entities.clear();
+  }
+
+  /**
    * Mark the entity id that belongs to this browser tab, repainting the
    * highlight: the old local player loses it, the new one gains it.
    */

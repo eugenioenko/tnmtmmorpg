@@ -247,8 +247,12 @@ async function main(): Promise<void> {
         // Binary frames: snapshots and pongs, decoded with the shared codec.
         try {
           message = decodeServerMessage(new Uint8Array(event.data));
-        } catch {
-          return; // malformed binary frame; ignore
+        } catch (err) {
+          // Say so. Swallowing this silently means a snapshot the client
+          // cannot read looks exactly like a server that stopped sending —
+          // the screen simply stops updating with nothing to explain it.
+          console.error('[client] could not decode a binary frame:', err);
+          return;
         }
       } else {
         // Text frames: the welcome, the recipe registry, and anything from
