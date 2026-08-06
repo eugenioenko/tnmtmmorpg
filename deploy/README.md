@@ -1,5 +1,7 @@
 # Deploying
 
+**Live: <https://tnmtmmorpg.yy-dev.top/>**
+
 Merge to `main` → GitHub Actions builds one image, pushes it to GHCR, and
 restarts the container on the VPS. Caddy serves the client and proxies the
 game socket.
@@ -10,6 +12,41 @@ comment at the top of `packages/server/src/db.ts`. The schema is four
 live in a JSON blob, so a new build never needs the database to change shape.
 The only thing deploy has to get right is *not losing the file*: `./data` is
 bind-mounted at `/app/.data`. Delete it and you get a fresh world.
+
+## Deploying does not reset the world
+
+A deploy recreates the *container*, but `./data` is a host bind mount, so the
+SQLite file outlives it. On boot the server restores every entity — players,
+their inventories, NPCs, dropped items — and every tile chunk that has already
+been generated.
+
+The seed only decides chunks that do **not exist yet**. Terrain is generated
+lazily as players explore, deterministically from `(seed, chunkX, chunkY)`, so
+with the seed unchanged the land discovered after a deploy is exactly the land
+that would have been there before. The map continues; it is not regenerated.
+
+### Changing WORLD_SEED on a live world does not do what it looks like
+
+The seed is read from the environment on every boot and is **never stored in
+the database** — nothing compares it against the world already on disk.
+
+So changing it on a world that has data does not produce a fresh map. It
+produces a hybrid: chunks that were already generated keep their old terrain,
+because they are persisted, while newly explored ones use the new seed. The
+result is a silent seam across the map, with no error and nothing in the logs.
+
+Treat `WORLD_SEED` as write-once. Changing it is only meaningful together with
+wiping the world:
+
+```bash
+cd ~/tnmtmmorpg
+docker compose down
+rm -rf data
+docker compose up -d
+```
+
+That is also the only way to deliberately start over — a redeploy will never
+do it for you, however many times you merge.
 
 ## What runs where
 
@@ -51,7 +88,7 @@ Same page, **Variables** tab. All have working defaults:
 |---|---|---|
 | `CADDY_NETWORK` | `web` | the external network Caddy is on — `web`, same as skedoodle |
 | `VITE_WS_URL` | `wss://tnmtmmorpg.yy-dev.top/ws` | different domain — this is compiled into the bundle, so changing it needs a rebuild |
-| `WORLD_SEED` | `42` | you want a different map on a *fresh* world |
+| `WORLD_SEED` | `42` | only ever on a *fresh* world — see [above](#changing-world_seed-on-a-live-world-does-not-do-what-it-looks-like) |
 
 ### 3. On the VPS
 

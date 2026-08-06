@@ -2,6 +2,8 @@
 
 A tick-based, grid-based multiplayer world that a group of friends extend by adding **features** — one folder each, no coordination, no merge conflicts.
 
+**Playing now at <https://tnmtmmorpg.yy-dev.top/>** — merging to `main` deploys there automatically ([how](deploy/README.md)).
+
 **The deliverable is not a game.** It is a base where shipping a feature is trivial, so that people keep shipping them — by hand, or by pointing an agent at this README — until *something* emerges. Maybe it becomes a game. Maybe it becomes an incoherent zoo. Maybe it starts falling over in interesting ways. Nobody knows yet, and that is the point: the base exists so the experiment can run.
 
 The only rule that protects the experiment: **features are cheap and disposable, core is not.** Adding a feature should never require touching core. If it does, that is a bug in the base, not in your idea.
