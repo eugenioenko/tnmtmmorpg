@@ -1,9 +1,10 @@
-import { Container, Graphics, Sprite, Text } from 'pixi.js';
+import { Container, Graphics, Rectangle, Sprite, Text } from 'pixi.js';
 import type { CraftingComponent, EntityState, ItemDropComponent } from '@game/shared';
 import { isStatsComponent } from '@game/shared';
 import { emojiForItem, emojiForKind, emojiTexture } from '../emoji-atlas.ts';
 import { getItemDef } from '../items.ts';
 import { TILE_SIZE } from './tilemap.ts';
+import { entityAppearance, paintEntityArt, type ArtState } from '../art.ts';
 
 /** Fallback palette when an entity has no player component with a color. */
 const FALLBACK_COLORS = ['#c0392b', '#2980b9', '#27ae60', '#f39c12', '#8e44ad', '#16a085'];
@@ -32,6 +33,11 @@ interface RenderEntity {
   hpBar: Graphics;
   /** When the entity left the newest snapshot, or null while it is live. */
   frozenAt: number | null;
+  art: ArtState;
+  textured: boolean;
+  lastUpdate: number;
+  lastMoved: number;
+  marker: number | undefined;
 }
 
 function isItemDrop(value: unknown): value is ItemDropComponent {
@@ -87,6 +93,18 @@ export class EntityRenderer {
   private paintRect(render: RenderEntity, isLocal: boolean): void {
     if (!render.rect) return; // ground items have no rect
     render.rect.clear();
+    if (render.textured) {
+      if (render.marker !== undefined) {
+        render.rect
+          .ellipse(16, 24, 19, 10)
+          .fill(0x202c34)
+          .stroke({ width: 3, color: render.marker });
+        render.rect.ellipse(16, 24, 13, 6).stroke({ width: 1, color: render.marker });
+      }
+      // A small ring keeps the local player identifiable without covering art.
+      if (isLocal) render.rect.ellipse(16, 27, 12, 5).stroke({ width: 1.5, color: 0xffefb0 });
+      return;
+    }
     const size = TILE_SIZE - RECT_PAD * 2;
     render.rect.rect(RECT_PAD, RECT_PAD, size, size).fill(render.color);
     if (isLocal) {
@@ -156,6 +174,7 @@ export class EntityRenderer {
     // entity is excluded; the server validates stats and adjacency, so a
     // click on a non-combat entity is a harmless no-op.
     container.eventMode = 'static';
+    container.hitArea = new Rectangle(0, -16, TILE_SIZE, TILE_SIZE + 16);
     container.cursor = 'pointer';
     container.on('pointertap', () => {
       if (this.attackHandler && entity.id !== this.localEntityId) {
@@ -174,7 +193,29 @@ export class EntityRenderer {
       craftBar,
       hpBar,
       frozenAt: null,
+      art: { facing: 'south', walkTime: 0, moving: false },
+      textured: false,
+      lastUpdate: performance.now(),
+      lastMoved: -1000,
+      marker: entityAppearance(entity)?.marker,
     };
+    render.textured = paintEntityArt(emoji, entity, render.art, performance.now());
+    const label = entity.components.label;
+    if (typeof label === 'string' && label.length > 0) {
+      const name = new Text({
+        text: label,
+        style: {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: 11,
+          fontWeight: 'bold',
+          fill: 0xfff4d6,
+          stroke: { color: 0x19241f, width: 3 },
+        },
+      });
+      name.anchor.set(0.5, 1);
+      name.position.set(16, render.marker === undefined ? emoji.y - 4 : -5);
+      container.addChild(name);
+    }
     this.paintRect(render, entity.id === this.localEntityId);
     container.position.set(entity.x * TILE_SIZE, entity.y * TILE_SIZE);
     this.layer.addChild(container);
@@ -238,7 +279,23 @@ export class EntityRenderer {
     for (const render of this.entities.values()) {
       const target = positions.get(render.id);
       if (target) {
+        const dx = target.x * TILE_SIZE - render.container.x;
+        const dy = target.y * TILE_SIZE - render.container.y;
+        const moving = dx > 0.01 || dx < -0.01 || dy > 0.01 || dy < -0.01;
+        const elapsed = now - render.lastUpdate;
+        if (moving) render.lastMoved = now;
+        render.art.moving = moving || now - render.lastMoved < 100;
+        if (moving) {
+          if (dx > 0.01 || dx < -0.01) render.art.facing = dx > 0 ? 'east' : 'west';
+          else render.art.facing = dy > 0 ? 'south' : 'north';
+        }
+        if (render.art.moving) render.art.walkTime += elapsed < 100 ? elapsed : 100;
+        else render.art.walkTime = 0;
+        const entity = byId.get(render.id);
+        if (entity) paintEntityArt(render.emoji, entity, render.art, now);
+        render.lastUpdate = now;
         render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
+        render.container.zIndex = target.y * TILE_SIZE + (render.kind === 'item' ? -1 : 0);
         render.frozenAt = null;
       } else if (render.frozenAt === null) {
         render.frozenAt = now; // despawned (or disconnected): freeze in place
@@ -252,6 +309,7 @@ export class EntityRenderer {
         if (!entity) continue;
         const render = this.createRenderEntity(entity);
         render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
+        render.container.zIndex = target.y * TILE_SIZE;
         this.entities.set(id, render);
       }
     }

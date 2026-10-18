@@ -4,6 +4,7 @@ import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, OVERWORLD, TILE_SIZE } from '@game/sha
 import { Camera } from './camera.ts';
 import { EntityRenderer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
+import { loadArt } from './art.ts';
 
 export { TILE_SIZE } from './renderer/tilemap.ts';
 
@@ -159,6 +160,7 @@ export class Game {
       failIfMajorPerformanceCaveat: false,
     });
     app.ticker.maxFPS = 60;
+    await loadArt();
 
     // Re-clamp on resize; `resizeTo: window` would grow past the server's
     // window again. The CSS in index.html centres the canvas in the page.
@@ -170,6 +172,7 @@ export class Game {
     const worldLayer = new Container();
     const tileLayer = new Graphics();
     const entityLayer = new Container();
+    entityLayer.sortableChildren = true;
     worldLayer.addChild(tileLayer, entityLayer);
     app.stage.addChild(worldLayer);
 

@@ -38,11 +38,12 @@ function isPortal(value: unknown): value is PortalComponent {
  * stays walkable and you can stand between them without being teleported.
  */
 const PAD_OFFSETS: readonly { x: number; y: number }[] = [
-  { x: -2, y: 0 },
-  { x: 2, y: 0 },
-  { x: 0, y: -2 },
-  { x: 0, y: 2 },
+  { x: -3, y: 0 },
+  { x: 3, y: 0 },
+  { x: 0, y: -3 },
+  { x: 0, y: 3 },
 ];
+const PAD_COLORS = [0xffa15b, 0x68bfff, 0xd8ecff, 0x8edb71] as const;
 
 /** Where you land in a themed world: its own centre, beside the return pad. */
 const ARRIVAL_X = WORLD_CENTER_X;
@@ -58,7 +59,11 @@ function placePads(world: WorldAPI): void {
     world.spawn(
       'portals:pad',
       { x: WORLD_CENTER_X + offset.x, y: WORLD_CENTER_Y + offset.y },
-      { portal: { toWorld: target, toX: ARRIVAL_X, toY: ARRIVAL_Y }, label: spec.name },
+      {
+        portal: { toWorld: target, toX: ARRIVAL_X, toY: ARRIVAL_Y },
+        appearance: { frame: 'objects/portal-base', scale: 2, marker: PAD_COLORS[index] },
+        label: spec.name.replace(/^The /, ''),
+      },
       OVERWORLD,
     );
 
@@ -70,6 +75,7 @@ function placePads(world: WorldAPI): void {
       {
         portal: { toWorld: OVERWORLD, toX: WORLD_CENTER_X, toY: WORLD_CENTER_Y },
         label: 'Home',
+        appearance: { frame: 'objects/portal-base', scale: 2, marker: 0xffdd8b },
       },
       target,
     );
@@ -89,7 +95,11 @@ export default definePlugin({
       fn: (world) => {
         // One-time: getSet claims the flag and returns the previous value, so
         // exactly one boot in the world's lifetime does the spawning.
-        if (world.getSet('portals:placed', '1') !== undefined) return;
+        if (world.getSet('portals:visible-v2', '1') !== undefined) return;
+        // Upgrade existing worlds as well: remove only pads owned by this feature.
+        for (const pad of world.query('portal')) {
+          if (pad.kind === 'portals:pad' || pad.kind === 'portals:return') world.despawn(pad.id);
+        }
         placePads(world);
       },
     },
@@ -120,6 +130,7 @@ export default definePlugin({
         const portal = pad.components.portal;
         if (!isPortal(portal)) return;
 
+        world.tile(portal.toX, portal.toY, portal.toWorld);
         if (world.travel(entityId, portal.toWorld, portal.toX, portal.toY)) {
           world.log(`entity ${entityId} travelled to ${portal.toWorld}`);
         }

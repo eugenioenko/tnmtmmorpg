@@ -10,5 +10,7 @@ export default defineClient({
   sprites: {
     'nature:bush': '🌿',
     'nature:tree': '🌳',
+    'nature:rock': '🪨',
+    'nature:stump': '🪵',
   },
 });

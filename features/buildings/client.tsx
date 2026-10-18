@@ -47,6 +47,7 @@ export default defineClient({
   sprites: {
     'buildings:door': '🚪',
     'buildings:exit': '🪜',
+    'buildings:prop': '🪵',
   },
   panels: {
     'buildings:panel': DoorPanel,

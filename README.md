@@ -29,6 +29,13 @@ pnpm --filter @game/server test
 
 Requires **Node 24** (runs `.ts` directly, no build step) and **pnpm**.
 
+Temporary graphics use a shared Harvest Moon sprite atlas, including animated
+player characters, objects, and terrain. Open `/art.html` on the client dev server
+to browse the extraction. See [the artwork notes](packages/client/src/art/harvest-moon/README.md)
+for organization, rebuilding, and replacement with the final art.
+Players start in a village beside four labeled travel pads. Stand beside a pad
+or building entrance and press **Space** to travel; every destination has a way back.
+
 ---
 
 ## The one decision that matters: feature or core?

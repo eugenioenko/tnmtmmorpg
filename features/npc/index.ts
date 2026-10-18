@@ -296,11 +296,7 @@ export function spawnNPC(world: WorldAPI, kind: string, x: number, y: number, ai
  * world.rng(), so a given world seed always scatters the same population.
  * Returns how many actually spawned.
  */
-export function scatterNPCs(
-  world: WorldAPI,
-  count: number,
-  area: number = SCATTER_AREA,
-): number {
+export function scatterNPCs(world: WorldAPI, count: number, area: number = SCATTER_AREA): number {
   const cx = (world.width / 2) | 0;
   const cy = (world.height / 2) | 0;
   const half = (area / 2) | 0;
@@ -368,7 +364,9 @@ function withinLeash(npc: NPCComponent, x: number, y: number): boolean {
   const ax = Number(anchor.slice(0, comma));
   const ay = Number(anchor.slice(comma + 1));
   if (!Number.isFinite(ax) || !Number.isFinite(ay)) return true;
-  return abs((x >> CHUNK_SHIFT) - ax) <= LEASH_CHUNKS && abs((y >> CHUNK_SHIFT) - ay) <= LEASH_CHUNKS;
+  return (
+    abs((x >> CHUNK_SHIFT) - ax) <= LEASH_CHUNKS && abs((y >> CHUNK_SHIFT) - ay) <= LEASH_CHUNKS
+  );
 }
 
 /**
@@ -643,9 +641,14 @@ export function createNPCSystem(): (world: WorldAPI, delta: number) => void {
 
       // 2. AI DISPATCH. `entity` is a detached copy; the behaviour mutates
       //    its npc/movement components and they are written back below.
-      const nearby = world
-        .queryNear(entity.x, entity.y, NPC_NEARBY_RADIUS)
-        .filter((e) => e.id !== entity.id);
+      // Built-in wandering/chasing uses direct target reads, never neighbours.
+      // Avoid scanning and copying the village's scenery for every villager.
+      const nearby =
+        ais.has(npc.ai) && !brokenAis.has(npc.ai)
+          ? world
+              .queryNear(entity.x, entity.y, NPC_NEARBY_RADIUS, entity.world)
+              .filter((e) => e.id !== entity.id)
+          : [];
       runAI(world, entity, nearby);
 
       // Re-read: a behaviour is allowed to replace a whole component.

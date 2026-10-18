@@ -1,3 +1,9 @@
 # nature
 
-The first world-decoration feature: bushes (🌿) and trees (🌳) scattered as stationary entities across the terrain near the world centre, where players spawn. Its single system, `nature:generate`, runs once — on the first tick of a fresh world — and scatters bushes on grass/forest/swamp tiles and trees on grass/forest tiles at low per-tile odds (all via the world's seeded rng), then sets the `nature:seeded` kv flag so restarts never double-seed. `tools/reset-world.mjs` sets the same flag after scattering its own population, so a reset world and the feature's bootstrap never overlap. Bushes and trees are plain position-only entities: they render, persist and sit in the world without moving or blocking anything.
+Decorates newly explored chunks with trees, bushes, boulders, and stumps. Forests
+have denser trees than grassland; roads, buildings, water, and the starting square
+remain clear. Decoration uses the chunk's seeded random stream and persists,
+so restarting does not grow another population. When the buildings feature
+finishes its village, a `buildings:village-ready` listener removes this feature's
+scenery from newly laid roads, walls, and water. Props are stationary and share
+the terrain/character atlas.

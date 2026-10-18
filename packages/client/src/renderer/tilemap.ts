@@ -1,4 +1,4 @@
-import { Graphics } from 'pixi.js';
+import { Graphics, Matrix, type FillStyle, type Texture } from 'pixi.js';
 import {
   OVERWORLD,
   TILE_BYTE_BY_KIND,
@@ -9,145 +9,26 @@ import {
   paletteColor,
   resolveWorld,
 } from '@game/shared';
+import { artTexture, terrainTexture, transitionTexture } from '../art.ts';
 
 // TILE_SIZE and the view radii live in @game/shared so the client can never
 // draw a different amount of world than the server sends.
 export { TILE_SIZE } from '@game/shared';
 
-/** Half a tile; the diagonal edge cuts pivot on the tile edge midpoints. */
-const HALF = TILE_SIZE / 2;
-
-/**
- * The corner triangle for each mask bit, in tile-local coordinates. When the
- * majority terrain at a corner differs from the tile's own terrain, the tile
- * renders as its full square with this triangle repainted in the corner's
- * terrain color — the diagonal shorelines come from these cuts.
- *
- * Bit 0 (1): TL corner   Bit 1 (2): TR corner
- * Bit 2 (4): BR corner   Bit 3 (8): BL corner
- */
-const CORNER_TRIANGLES: Record<number, [number, number, number, number, number, number]> = {
-  1: [0, 0, HALF, 0, 0, HALF], // TL: (0,0) - (H,0) - (0,H)
-  2: [TILE_SIZE, 0, TILE_SIZE, HALF, HALF, 0], // TR: (S,0) - (S,H) - (H,0)
-  4: [TILE_SIZE, TILE_SIZE, TILE_SIZE, HALF, HALF, TILE_SIZE], // BR: (S,S) - (S,H) - (H,S)
-  8: [0, TILE_SIZE, HALF, TILE_SIZE, 0, HALF], // BL: (0,S) - (H,S) - (0,H)
-};
-
-const CORNER_BITS = [1, 2, 4, 8] as const;
-
-/**
- * Compute corner mask for a tile.
- * Bit 0 (1): TL corner differs
- * Bit 1 (2): TR corner differs
- * Bit 2 (4): BR corner differs
- * Bit 3 (8): BL corner differs
- *
- * A corner "differs" if the majority of tiles at that corner
- * are a different terrain type than this tile.
- */
-function cornerMask(grid: (x: number, y: number) => number, tx: number, ty: number): number {
-  const center = grid(tx, ty);
-  let mask = 0;
-
-  // TL corner: tiles at (tx,ty), (tx-1,ty), (tx-1,ty-1), (tx,ty-1)
-  {
-    const same =
-      (grid(tx - 1, ty - 1) === center ? 1 : 0) +
-      (grid(tx, ty - 1) === center ? 1 : 0) +
-      (grid(tx - 1, ty) === center ? 1 : 0) +
-      (grid(tx, ty) === center ? 1 : 0);
-    // "same < 2" = a strict majority (3+) of the corner's tiles differ.
-    // A 2v2 tie counts as "same": neither side cuts, so axis-aligned
-    // boundaries stay clean straight lines instead of tearing.
-    if (same < 2) mask |= 1; // minority same → corner is "different"
-  }
-  // TR corner
-  {
-    const same =
-      (grid(tx, ty - 1) === center ? 1 : 0) +
-      (grid(tx + 1, ty - 1) === center ? 1 : 0) +
-      (grid(tx, ty) === center ? 1 : 0) +
-      (grid(tx + 1, ty) === center ? 1 : 0);
-    if (same < 2) mask |= 2;
-  }
-  // BR corner
-  {
-    const same =
-      (grid(tx, ty) === center ? 1 : 0) +
-      (grid(tx + 1, ty) === center ? 1 : 0) +
-      (grid(tx, ty + 1) === center ? 1 : 0) +
-      (grid(tx + 1, ty + 1) === center ? 1 : 0);
-    if (same < 2) mask |= 4;
-  }
-  // BL corner
-  {
-    const same =
-      (grid(tx - 1, ty) === center ? 1 : 0) +
-      (grid(tx, ty) === center ? 1 : 0) +
-      (grid(tx - 1, ty + 1) === center ? 1 : 0) +
-      (grid(tx, ty + 1) === center ? 1 : 0);
-    if (same < 2) mask |= 8;
-  }
-
-  return mask;
-}
-
-/**
- * The majority terrain at one of the tile's corners, for coloring the cut
- * triangle. Only called when the mask bit is set, so the majority is a
- * strict one (3 or 4 of the 4 tiles share it); any differing tile works.
- */
-function cornerTerrain(
-  grid: (x: number, y: number) => number,
-  tx: number,
-  ty: number,
-  bit: number,
-): number {
-  const center = grid(tx, ty);
-  switch (bit) {
-    case 1:
-      for (const [dx, dy] of [
-        [-1, -1],
-        [0, -1],
-        [-1, 0],
-      ]) {
-        const t = grid(tx + dx, ty + dy);
-        if (t !== center) return t;
-      }
-      break;
-    case 2:
-      for (const [dx, dy] of [
-        [0, -1],
-        [1, -1],
-        [1, 0],
-      ]) {
-        const t = grid(tx + dx, ty + dy);
-        if (t !== center) return t;
-      }
-      break;
-    case 4:
-      for (const [dx, dy] of [
-        [1, 0],
-        [0, 1],
-        [1, 1],
-      ]) {
-        const t = grid(tx + dx, ty + dy);
-        if (t !== center) return t;
-      }
-      break;
-    case 8:
-      for (const [dx, dy] of [
-        [-1, 0],
-        [-1, 1],
-        [0, 1],
-      ]) {
-        const t = grid(tx + dx, ty + dy);
-        if (t !== center) return t;
-      }
-      break;
-  }
-  return center;
-}
+// N, E, S, W, then the four diagonals. Bits match the atlas edge masks.
+const NEIGHBOURS = [
+  [0, -1, 1],
+  [1, 0, 2],
+  [0, 1, 4],
+  [-1, 0, 8],
+  [-1, -1, 16],
+  [1, -1, 32],
+  [1, 1, 64],
+  [-1, 1, 128],
+] as const;
+// Higher layers feather into lower ones. Water remains below every shoreline.
+const PRIORITY = [5, 0, 1, 3, 6, 4, 7, 2];
+const BIOME_TINT: Record<number, number> = { 3: 0xffe1a0, 4: 0x8bba73, 7: 0x70875c };
 
 /**
  * Renders the tile layer from the local world model's known-tiles map. The
@@ -155,9 +36,9 @@ function cornerTerrain(
  * else is grass — so the visible range is drawn as grass squares first and
  * the known tiles' squares and diagonal edge cuts overlay them.
  *
- * Every visible tile renders as its full square plus up to one corner-cut
- * triangle per corner whose majority terrain differs (see cornerMask), which
- * turns terrain transitions into smooth diagonal shorelines.
+ * Adjacent biomes join through eight-neighbour textured fringes and rounded
+ * corners, with a thin shoreline rim where land meets water. All transitions
+ * share the same source atlas as terrain and entities.
  */
 export class TilemapRenderer {
   // Last-drawn tilemap extent (the base follows the camera).
@@ -205,7 +86,7 @@ export class TilemapRenderer {
     viewH: number,
   ): void {
     // The drawn range must cover the camera view; the +1 halo is so the
-    // corner sampling (which reads one tile out) stays inside drawn ground.
+    // transition sampling (which reads one tile out) stays inside drawn ground.
     const halfX = ~~(viewW / (2 * TILE_SIZE)) + VIEW_HALO;
     const halfY = ~~(viewH / (2 * TILE_SIZE)) + VIEW_HALO;
     const minX = ~~(cameraCenterX / TILE_SIZE) - halfX;
@@ -220,12 +101,9 @@ export class TilemapRenderer {
     // rectangle on the first frame, which hung the GPU process.
     // Tiles outside the viewport are not visible, so they are simply clipped.
 
-    // Decode the visible range (plus a 1-tile halo, since corner sampling
-    // reads one tile out) into a flat byte buffer ONCE. The corner mask does
-    // 16 grid() reads per cell and cornerTerrain several more; going straight
-    // to the tiles map would build a `${x},${y}` key on every one of those —
-    // ~20k string allocations per rebuild. This is ~1.2k instead, and every
-    // later read is a plain array index.
+    // Decode the visible range and a one-tile halo once. Eight-neighbour
+    // transitions then read byte indices instead of allocating map keys for
+    // every neighbour of every visible tile.
     const bufW = maxX - minX + 3;
     const bufH = maxY - minY + 3;
     if (this.buf.length < bufW * bufH) this.buf = new Uint8Array(bufW * bufH);
@@ -234,6 +112,8 @@ export class TilemapRenderer {
     // Change detection folded into the same pass, as a rolling FNV-1a hash
     // (no allocation, unlike joining a ~2400-entry string every frame).
     let hash = 2166136261;
+    const phase = ~~(performance.now() / 220) % 4;
+    let hasWater = false;
     hash = ((hash ^ minX) * 16777619) >>> 0;
     hash = ((hash ^ minY) * 16777619) >>> 0;
     hash = ((hash ^ maxX) * 16777619) >>> 0;
@@ -248,10 +128,11 @@ export class TilemapRenderer {
         const kind = tiles.get(`${x},${y}`);
         const byte = kind === undefined ? fallback : (TILE_BYTE_BY_KIND[kind] ?? fallback);
         buf[row + (x - minX + 1)] = byte;
+        if (byte === 1) hasWater = true;
         if (byte !== TILE_GRASS) hash = ((hash ^ (x * 31 + y)) * 16777619 + byte) >>> 0;
       }
     }
-    const key = String(hash);
+    const key = `${hash}:${hasWater ? phase : 0}`;
     if (
       key === this.tilesKey &&
       minX === this.minX &&
@@ -277,25 +158,61 @@ export class TilemapRenderer {
       return buf[by * bufW + bx];
     };
 
+    const fill = (
+      byte: number,
+      ox: number,
+      oy: number,
+      texture: Texture | undefined = terrainTexture(byte, byte === 1 ? phase : 0),
+    ): FillStyle | number => {
+      const exteriorWall = byte === 10 && this.palette !== 'interior';
+      if (exteriorWall) texture = terrainTexture(5);
+      if (!texture) return paletteColor(this.palette, byte);
+      // Preserve the distinctive colors of themed worlds; the overworld uses
+      // the extracted palette, with a few biome-specific color adjustments.
+      const color = exteriorWall
+        ? 0x756351
+        : this.palette === 'overworld' || this.palette === 'interior'
+          ? (BIOME_TINT[byte] ?? 0xffffff)
+          : paletteColor(this.palette, byte);
+      return {
+        texture,
+        color,
+        textureSpace: 'global',
+        matrix: new Matrix()
+          .scale(TILE_SIZE / texture.width, TILE_SIZE / texture.height)
+          .translate(ox, oy),
+      };
+    };
+
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         const byte = grid(x, y);
-        const color = paletteColor(this.palette, byte);
         const ox = x * TILE_SIZE;
         const oy = y * TILE_SIZE;
 
         // The tile's full square, then the diagonal edge cuts.
-        this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(color);
+        this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(byte, ox, oy));
 
-        const mask = cornerMask(grid, x, y);
-        if (mask === 0) continue;
-        for (const bit of CORNER_BITS) {
-          if ((mask & bit) === 0) continue;
-          const foreign = paletteColor(this.palette, cornerTerrain(grid, x, y, bit));
-          const tri = CORNER_TRIANGLES[bit];
-          this.layer
-            .poly([ox + tri[0], oy + tri[1], ox + tri[2], oy + tri[3], ox + tri[4], oy + tri[5]])
-            .fill(foreign);
+        if (byte > 7) continue; // Built interior walls/floors keep square edges.
+        const masks = [0, 0, 0, 0, 0, 0, 0, 0];
+        let shoreMask = 0;
+        for (const [dx, dy, bit] of NEIGHBOURS) {
+          const neighbour = grid(x + dx, y + dy);
+          if (neighbour > 7 || PRIORITY[neighbour] <= PRIORITY[byte]) continue;
+          masks[neighbour] |= bit;
+          if (byte === 1) shoreMask |= bit;
+        }
+        if (shoreMask) {
+          const shore = artTexture(`transitions/shore/${shoreMask}`);
+          if (shore) this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(3, ox, oy, shore));
+        }
+        // Draw in priority order so multi-biome junctions agree on every tile.
+        for (const neighbour of [2, 7, 3, 5, 0, 4, 6]) {
+          const mask = masks[neighbour];
+          if (!mask) continue;
+          const overlay = transitionTexture(neighbour, mask);
+          if (overlay)
+            this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(neighbour, ox, oy, overlay));
         }
       }
     }
