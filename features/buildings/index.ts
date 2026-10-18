@@ -1,12 +1,5 @@
-import {
-  definePlugin,
-  INTERIOR_SIZE,
-  OVERWORLD,
-  WORLD_CENTER_X,
-  WORLD_CENTER_Y,
-  interiorWorldId,
-  type WorldAPI,
-} from '@game/shared';
+import { definePlugin, INTERIOR_SIZE, OVERWORLD, type WorldAPI } from '@game/shared';
+import { buildVillage, HOUSE_STYLES, placeHouse } from './village.ts';
 
 /**
  * Buildings and caves: doors scattered through the overworld, each opening
@@ -35,11 +28,30 @@ interface DoorComponent {
 function isDoor(value: unknown): value is DoorComponent {
   if (typeof value !== 'object' || value === null) return false;
   const d = value as Record<string, unknown>;
-  return typeof d.toWorld === 'string' && typeof d.backX === 'number' && typeof d.backY === 'number';
+  return (
+    typeof d.toWorld === 'string' && typeof d.backX === 'number' && typeof d.backY === 'number'
+  );
 }
 
 /** Where you arrive inside: the middle of the interior, always floor. */
 const ARRIVAL = INTERIOR_SIZE / 2;
+
+function findArrival(world: WorldAPI, target: string): { x: number; y: number } | undefined {
+  world.tile(ARRIVAL, ARRIVAL, target); // Generate the room before probing collision.
+  // Rooms may occupy only part of the interior's coordinate space. Choose
+  // actual floor with room for an adjacent exit, rather than assuming centre.
+  for (let radius = 0; radius < ARRIVAL; radius++) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx !== -radius && dx !== radius && dy !== -radius && dy !== radius) continue;
+        const x = ARRIVAL + dx,
+          y = ARRIVAL + dy;
+        if (world.walkable(x, y, target) && world.walkable(x, y + 1, target)) return { x, y };
+      }
+    }
+  }
+  return undefined;
+}
 
 /**
  * Roughly one door per chunk, only on dry walkable ground. Chunk decoration
@@ -48,38 +60,12 @@ const ARRIVAL = INTERIOR_SIZE / 2;
  */
 const DOORS_PER_CHUNK = 1;
 
-/**
- * Three doors along the south side of the portal plaza, so there is always
- * somewhere to go in without hunting the countryside for one.
- *
- * They sit clear of the four portal pads (which are two tiles out from the
- * centre on each axis) and inside the plaza, which core's generator
- * guarantees is dry walkable land in every world.
- *
- * Each door's interior is keyed by its own position, so these three open
- * onto three genuinely different rooms.
- */
-const PLAZA_DOORS: readonly { x: number; y: number }[] = [
-  { x: WORLD_CENTER_X - 2, y: WORLD_CENTER_Y + 4 },
-  { x: WORLD_CENTER_X, y: WORLD_CENTER_Y + 4 },
-  { x: WORLD_CENTER_X + 2, y: WORLD_CENTER_Y + 4 },
-];
-
-function placePlazaDoors(world: WorldAPI): void {
-  for (const at of PLAZA_DOORS) {
-    world.spawn(
-      'buildings:door',
-      at,
-      { door: { toWorld: interiorWorldId(at.x, at.y), backX: at.x, backY: at.y } },
-      OVERWORLD,
-    );
-  }
-  world.log(`placed ${PLAZA_DOORS.length} doors in the central plaza`);
-}
+/** The starting village is built across ticks, then persists with the world. */
+let villageWork: Generator<void> | undefined;
 
 export default definePlugin({
   id: 'buildings',
-  entityKinds: ['buildings:door', 'buildings:exit'],
+  entityKinds: ['buildings:door', 'buildings:exit', 'buildings:prop'],
   items: [],
   recipes: [],
 
@@ -87,10 +73,14 @@ export default definePlugin({
     {
       name: 'buildings:bootstrap',
       fn: (world) => {
-        // getSet claims the flag and returns what was there before, so
-        // exactly one boot in the world's lifetime spawns these.
-        if (world.getSet('buildings:plaza', '1') !== undefined) return;
-        placePlazaDoors(world);
+        if (world.getSet('buildings:village-v2') !== undefined) return;
+        villageWork ??= buildVillage(world);
+        for (let i = 0; i < 3; i++) {
+          if (villageWork.next().done) {
+            world.getSet('buildings:village-v2', '1');
+            return;
+          }
+        }
       },
     },
   ],
@@ -102,8 +92,16 @@ export default definePlugin({
     for (let i = 0; i < DOORS_PER_CHUNK; i++) {
       // rng is seeded per chunk, so the same chunk always grows the same
       // buildings — no Math.random, and no drift between restarts.
-      const x = area.minX + ~~(rng() * width);
-      const y = area.minY + ~~(rng() * height);
+      const x = area.minX + 4 + ~~(rng() * (width - 8));
+      const y = area.minY + 4 + ~~(rng() * (height - 8));
+      // The starting village has a deliberate layout and is generated above.
+      if (
+        x > world.width / 2 - 26 &&
+        x < world.width / 2 + 26 &&
+        y > world.height / 2 - 26 &&
+        y < world.height / 2 + 26
+      )
+        continue;
 
       // Doors need somewhere to stand: skip water, mountain and anything
       // else core calls unwalkable.
@@ -111,12 +109,14 @@ export default definePlugin({
       const ground = world.tile(x, y, OVERWORLD);
       if (ground === 'swamp') continue; // no houses in the marsh
 
-      world.spawn(
-        'buildings:door',
-        { x, y },
-        { door: { toWorld: interiorWorldId(x, y), backX: x, backY: y } },
-        OVERWORLD,
-      );
+      const style = HOUSE_STYLES[~~(rng() * HOUSE_STYLES.length)];
+      let clear = true;
+      for (let dy = -style.depth; dy <= 1; dy++) {
+        for (let dx = -style.left; dx <= style.right; dx++) {
+          if (!world.walkable(x + dx, y + dy)) clear = false;
+        }
+      }
+      if (clear) placeHouse(world, x, y, style, 'Homestead');
     }
   },
 
@@ -150,15 +150,35 @@ export default definePlugin({
         // First visit mints the interior: travel generates it on arrival, and
         // the exit is spawned once so the room is never a dead end.
         const target = spec.toWorld;
-        if (!world.travel(entityId, target, ARRIVAL, ARRIVAL)) return;
+        const arrival = findArrival(world, target);
+        if (!arrival || !world.travel(entityId, target, arrival.x, arrival.y)) return;
 
         if (world.getSet(`buildings:exit:${target}`, '1') === undefined) {
           world.spawn(
             'buildings:exit',
-            { x: ARRIVAL, y: ARRIVAL + 1 },
-            { door: { toWorld: OVERWORLD, backX: spec.backX, backY: spec.backY } },
+            { x: arrival.x, y: arrival.y + 1 },
+            {
+              door: { toWorld: OVERWORLD, backX: spec.backX, backY: spec.backY },
+              appearance: { frame: 'objects/door', scale: 1 },
+              label: 'Exit · Space',
+            },
             target,
           );
+          // Furnish each room without blocking the arrival tile or the exit.
+          const furniture = [
+            { x: arrival.x - 2, y: arrival.y - 2, frame: 'objects/barrel' },
+            { x: arrival.x + 2, y: arrival.y - 2, frame: 'objects/barrel' },
+            { x: arrival.x - 2, y: arrival.y, frame: 'objects/well' },
+          ];
+          for (const at of furniture) {
+            if (world.walkable(at.x, at.y, target))
+              world.spawn(
+                'buildings:prop',
+                at,
+                { appearance: { frame: at.frame, scale: 1 } },
+                target,
+              );
+          }
         }
         world.log(`entity ${entityId} entered ${target}`);
       },

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temporary artwork library</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #18211e; color: #f3eddb; font: 15px system-ui; }
+  header { padding: 28px; position: sticky; top: 0; z-index: 1; background: #18211ef5; border-bottom: 1px solid #455346; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { color: #b5c4b8; margin: 8px 0 16px; }
+  select, input, a { padding: 10px; background: #29382f; color: inherit; border: 1px solid #526650; border-radius: 5px; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 12px; padding: 24px; }
+  figure { margin: 0; background: #29352f; border: 1px solid #455346; border-radius: 6px; overflow: hidden; }
+  canvas { width: 100%; height: 144px; image-rendering: pixelated; display: block; }
+  figcaption { padding: 10px; font-size: 12px; overflow-wrap: anywhere; }
+</style>
+<header>
+  <h1>Temporary artwork library</h1>
+  <p id="summary">Loading the shared atlas…</p>
+  <select id="category" aria-label="Asset category"></select>
+  <input id="search" aria-label="Search assets" placeholder="Find an animation ID or asset">
+  <a href="/">Back to game</a>
+</header>
+<main></main>
+<script type="module">
+  import atlas from './src/art/harvest-moon/atlas.json';
+  import atlasUrl from './src/art/harvest-moon/atlas.png';
+  const image = new Image();
+  image.src = atlasUrl;
+  await image.decode();
+  const summary = document.querySelector('#summary');
+  summary.textContent = `${Object.keys(atlas.animations).length.toLocaleString()} animations · ${atlas.characters.length} player sets · ${Object.keys(atlas.tilesets).length} background libraries · one ${atlas.size.join(' × ')} atlas`;
+  const select = document.querySelector('#category');
+  for (const name of [...Object.keys(atlas.groups), 'terrain', 'buildings-and-props', 'tilesets', 'player-sets']) {
+    select.add(new Option(name.replaceAll('/', ' / ').replaceAll('-', ' '), name));
+  }
+  const main = document.querySelector('main');
+  const visible = new Set();
+  const observer = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) visible.add(entry.target);
+      else visible.delete(entry.target);
+    }
+  });
+  function render() {
+    observer.disconnect(); visible.clear(); main.replaceChildren();
+    const category = select.value;
+    let entries;
+    if (category === 'terrain') entries = Object.entries(atlas.terrain).map(([name, frames]) => [name, frames.map(frame => ({ frame, ticks: 12 }))]);
+    else if (category === 'tilesets') entries = Object.keys(atlas.tilesets).map(name => [name, [{ frame: name, ticks: 255 }]]);
+    else if (category === 'player-sets') entries = atlas.characters.map(c => [c.id, atlas.animations[c.walk[0]]]);
+    else if (category === 'buildings-and-props') entries = Object.keys(atlas.frames)
+      .filter(n => n.startsWith('buildings/') || (n.startsWith('objects/') && !n.includes('/frames/')))
+      .map(n => [n, [{frame: n, ticks: 255}]]);
+    else entries = atlas.groups[category].map(id => [`Animation ${id}`, atlas.animations[id]]);
+    for (const [name, seq] of entries) {
+      if (!name.toLowerCase().includes(document.querySelector('#search').value.toLowerCase())) continue;
+      const figure = document.createElement('figure');
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 144;
+      canvas.seq = seq; canvas.category = category;
+      const caption = document.createElement('figcaption'); caption.textContent = `${name} · ${seq.length} frames`;
+      figure.append(canvas, caption); main.append(figure); observer.observe(canvas);
+    }
+  }
+  select.addEventListener('change', render);
+  document.querySelector('#search').addEventListener('input', render);
+  render();
+  function draw(now) {
+    for (const canvas of visible) {
+      const seq = canvas.seq;
+      if (!seq.length) continue;
+      const total = seq.reduce((n, f) => n + (f.ticks === 255 ? 60 : f.ticks), 0);
+      let t = (now * 60 / 1000) % total;
+      let selected = seq[0];
+      for (const frame of seq) { selected = frame; t -= frame.ticks === 255 ? 60 : frame.ticks; if (t < 0) break; }
+      const [x, y, w, h, ox, oy] = atlas.frames[selected.frame];
+      const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, 144, 144);
+      if (canvas.category === 'tilesets') ctx.drawImage(image, x, y, w, h, 8, 0, w, h);
+      else if (canvas.category === 'terrain') ctx.drawImage(image, x, y, w, h, 40, 40, 64, 64);
+      else if (canvas.category === 'buildings-and-props') {
+        const scale = Math.min(128 / w, 120 / h, 3);
+        ctx.drawImage(image, x, y, w, h, (144 - w * scale) / 2, 128 - h * scale, w * scale, h * scale);
+      }
+      else ctx.drawImage(image, x, y, w, h, 72 + ox * 2, 104 + oy * 2, w * 2, h * 2);
+    }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+</script>
+</html>

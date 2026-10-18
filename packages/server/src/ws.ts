@@ -133,7 +133,8 @@ function isBinaryRequest(value: unknown): value is { t: 'binary'; enabled: boole
 	 * see one another's activity (the world itself is 10000×10000, but every
 	 * player starts here).
  */
-const SPAWN_AREA = 20;
+// Start beside the central portal plaza, with its exits and village in sight.
+const SPAWN_AREA = 6;
 
 /** A random walkable tile not already occupied by another player. */
 function findSpawn(world: World): WorldCoord {

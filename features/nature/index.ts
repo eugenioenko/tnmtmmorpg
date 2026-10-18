@@ -31,10 +31,21 @@ const BUSH_CHANCE = 0.03;
 
 export default definePlugin({
   id: 'nature',
-  entityKinds: ['nature:bush', 'nature:tree'],
+  entityKinds: ['nature:bush', 'nature:tree', 'nature:rock', 'nature:stump'],
   systems: [],
   commands: [],
-  events: {},
+  events: {
+    'buildings:village-ready': (world, payload) => {
+      const at = payload as { x: number; y: number };
+      for (const entity of world.queryNear(at.x, at.y, 23)) {
+        if (!entity.kind.startsWith('nature:')) continue;
+        const ground = world.tile(entity.x, entity.y);
+        if (ground !== 'grass' && ground !== 'forest' && ground !== 'swamp') {
+          world.despawn(entity.id);
+        }
+      }
+    },
+  },
   items: [],
   recipes: [],
 
@@ -45,12 +56,29 @@ export default definePlugin({
         // Roads stay clear, and nothing grows on water, sand, snow or rock.
         const woodland = tile === 'grass' || tile === 'forest';
         if (!woodland && tile !== 'swamp') continue;
+        // Keep the starting square and the fronts of village buildings clear.
+        const dx = x - world.width / 2;
+        const dy = y - world.height / 2;
+        if (dx >= -11 && dx <= 11 && dy >= -9 && dy <= 9) continue;
 
         const roll = rng();
-        if (roll < TREE_CHANCE && woodland) {
+        const trees = tile === 'forest' ? 0.055 : TREE_CHANCE;
+        if (roll < trees && woodland) {
           world.spawn('nature:tree', { x, y });
-        } else if (roll < BUSH_CHANCE) {
+        } else if (roll < trees + BUSH_CHANCE) {
           world.spawn('nature:bush', { x, y });
+        } else if (roll < trees + BUSH_CHANCE + 0.012 && woodland) {
+          world.spawn(
+            'nature:rock',
+            { x, y },
+            { appearance: { frame: 'objects/boulder', scale: 1 } },
+          );
+        } else if (roll < trees + BUSH_CHANCE + 0.02 && woodland) {
+          world.spawn(
+            'nature:stump',
+            { x, y },
+            { appearance: { frame: 'objects/stump', scale: 1 } },
+          );
         }
       }
     }
