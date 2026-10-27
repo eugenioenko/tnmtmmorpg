@@ -15,6 +15,7 @@ import {
   TILE_WALL,
   OVERWORLD,
   DEFAULT_GEN,
+  DUNGEON_ENTRY,
   type GenParams,
   type WorldSpec,
 } from '@game/shared';
@@ -641,6 +642,147 @@ export function generateRooms(
 }
 
 /**
+ * Cave generator: a dungeon carved out of rock.
+ *
+ * An entrance chamber on the west edge (always containing DUNGEON_ENTRY,
+ * where arrivals land) leads through a chain of chambers eastward to a
+ * large final hall, with a dead-end side room or two hanging off the chain.
+ * Chambers have ragged edges and the tunnels between them are two tiles
+ * wide, so it reads as dug rather than built. Every floor tile touching
+ * void becomes WALL, which the client draws as rock.
+ *
+ * Deterministic from the seed (which comes from the entrance position), so
+ * every copy of a cave has the same layout and nothing is stored.
+ */
+export function generateCaves(seed: number, cx: number, cy: number): Uint8Array {
+  const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
+  data.fill(TILE_VOID);
+  if (cx !== 0 || cy !== 0) return data;
+
+  let state = seed >>> 0 || 1;
+  const next = (): number => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const between = (lo: number, hi: number): number => lo + ~~(next() * (hi - lo + 1));
+  const max = CHUNK_SIZE - 2;
+
+  const carve = (x: number, y: number): void => {
+    if (x < 1 || y < 1 || x > max || y > max) return;
+    data[y * CHUNK_SIZE + x] = TILE_FLOOR;
+  };
+  const isFloor = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < CHUNK_SIZE && y < CHUNK_SIZE && data[y * CHUNK_SIZE + x] === TILE_FLOOR;
+
+  interface Room {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }
+  const centre = (r: Room): { x: number; y: number } => ({ x: (r.x0 + r.x1) >> 1, y: (r.y0 + r.y1) >> 1 });
+
+  const room = (r: Room): void => {
+    for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) carve(x, y);
+    // Ragged edges: bite into the rock around the rectangle here and there.
+    for (let x = r.x0; x <= r.x1; x++) {
+      if (next() < 0.4) carve(x, r.y0 - 1);
+      if (next() < 0.4) carve(x, r.y1 + 1);
+    }
+    for (let y = r.y0; y <= r.y1; y++) {
+      if (next() < 0.4) carve(r.x0 - 1, y);
+      if (next() < 0.4) carve(r.x1 + 1, y);
+    }
+  };
+
+  /** A two-wide tunnel: along x first or y first, with the odd kink. */
+  const tunnel = (a: { x: number; y: number }, b: { x: number; y: number }): void => {
+    let x = a.x;
+    let y = a.y;
+    const xFirst = next() < 0.5;
+    const stepX = (): void => {
+      while (x !== b.x) {
+        x += x < b.x ? 1 : -1;
+        if (next() < 0.12) y += next() < 0.5 ? 1 : -1;
+        if (y < 2) y = 2;
+        if (y > max - 1) y = max - 1;
+        carve(x, y);
+        carve(x, y + 1);
+      }
+    };
+    const stepY = (): void => {
+      while (y !== b.y) {
+        y += y < b.y ? 1 : -1;
+        carve(x, y);
+        carve(x + 1, y);
+      }
+    };
+    if (xFirst) {
+      stepX();
+      stepY();
+    } else {
+      stepY();
+      stepX();
+    }
+  };
+
+  const entrance: Room = {
+    x0: DUNGEON_ENTRY.x - 4,
+    y0: DUNGEON_ENTRY.y - 4,
+    x1: DUNGEON_ENTRY.x + 4,
+    y1: DUNGEON_ENTRY.y + 4,
+  };
+  const chain: Room[] = [entrance];
+  const count = between(4, 6);
+  const span = (max - 2 - (entrance.x1 + 3)) / count;
+  for (let i = 0; i < count; i++) {
+    const last = i === count - 1;
+    const w = last ? between(13, 15) : between(7, 11);
+    const h = last ? between(11, 13) : between(6, 10);
+    let x0 = entrance.x1 + 3 + ~~(span * i) + between(0, 2);
+    if (x0 + w > max - 1) x0 = max - 1 - w;
+    const y0 = between(3, max - 1 - h);
+    chain.push({ x0, y0, x1: x0 + w - 1, y1: y0 + h - 1 });
+  }
+  for (const r of chain) room(r);
+  for (let i = 1; i < chain.length; i++) tunnel(centre(chain[i - 1]), centre(chain[i]));
+
+  const sides = between(1, 2);
+  for (let i = 0; i < sides; i++) {
+    const from = chain[between(1, chain.length - 2)];
+    const w = between(5, 7);
+    const h = between(4, 6);
+    const above = from.y0 > CHUNK_SIZE - from.y1;
+    let y0 = above ? from.y0 - h - between(4, 7) : from.y1 + between(4, 7);
+    if (y0 < 3) y0 = 3;
+    if (y0 + h > max - 1) y0 = max - 1 - h;
+    let x0 = from.x0 + between(-2, 2);
+    if (x0 < 3) x0 = 3;
+    if (x0 + w > max - 1) x0 = max - 1 - w;
+    const side: Room = { x0, y0, x1: x0 + w - 1, y1: y0 + h - 1 };
+    room(side);
+    tunnel(centre(from), centre(side));
+  }
+
+  for (let y = 0; y < CHUNK_SIZE; y++) {
+    for (let x = 0; x < CHUNK_SIZE; x++) {
+      if (data[y * CHUNK_SIZE + x] !== TILE_VOID) continue;
+      let edge = false;
+      for (let dy = -1; dy <= 1 && !edge; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (isFloor(x + dx, y + dy)) {
+            edge = true;
+            break;
+          }
+        }
+      }
+      if (edge) data[y * CHUNK_SIZE + x] = TILE_WALL;
+    }
+  }
+  return data;
+}
+
+/**
  * The world's chunk-based tile map: `Map<chunkKey, Uint8Array>` — one 64x64
  * array per chunk, allocated lazily. An unvisited 10000x10000 world costs a
  * few bytes of map overhead; memory grows only with the area players
@@ -700,9 +842,11 @@ export class ChunkStore {
 
   /** This world's generator, chosen by its spec. */
   private generate(cx: number, cy: number): Uint8Array {
-    return this.spec.generator === 'rooms'
-      ? generateRooms(this.seed, cx, cy, this.width, this.height)
-      : generateChunk(this.seed, cx, cy, this.width, this.height, this.spec.gen);
+    if (this.spec.generator === 'rooms') {
+      return generateRooms(this.seed, cx, cy, this.width, this.height);
+    }
+    if (this.spec.generator === 'caves') return generateCaves(this.seed, cx, cy);
+    return generateChunk(this.seed, cx, cy, this.width, this.height, this.spec.gen);
   }
 
   /** Number of tile chunks currently loaded in memory. */

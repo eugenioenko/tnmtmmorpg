@@ -2,9 +2,14 @@ import { Graphics, Matrix, type FillStyle, type Texture } from 'pixi.js';
 import {
   OVERWORLD,
   TILE_BYTE_BY_KIND,
+  TILE_DIRT,
+  TILE_FLOOR,
   TILE_GRASS,
+  TILE_MOUNTAIN,
   TILE_SIZE,
   TILE_VOID,
+  TILE_WALL,
+  isCarvedWorld,
   VIEW_HALO,
   paletteColor,
   resolveWorld,
@@ -46,6 +51,8 @@ export class TilemapRenderer {
   /** The world being drawn, and the palette it selects. */
   private world = OVERWORLD;
   private palette = 'overworld';
+  /** Interiors and caves: ground the server never sent is void, not grass. */
+  private carved = false;
   private minX = 0;
   private maxX = 0;
   private minY = 0;
@@ -72,7 +79,9 @@ export class TilemapRenderer {
   setWorld(world: string): void {
     if (world === this.world) return;
     this.world = world;
-    this.palette = resolveWorld(world)?.palette ?? 'overworld';
+    const spec = resolveWorld(world);
+    this.palette = spec?.palette ?? 'overworld';
+    this.carved = isCarvedWorld(spec);
     // Force the next rebuild: the tile SET may be identical while every
     // colour changed, and the change hash would not notice.
     this.tilesKey = '';
@@ -124,7 +133,7 @@ export class TilemapRenderer {
         // Ground the server never mentioned. Outdoors that means grass (the
         // server omits it to save bandwidth); inside a building it means
         // void, because there "not sent" is "not carved".
-        const fallback = this.palette === 'interior' ? TILE_VOID : TILE_GRASS;
+        const fallback = this.carved ? TILE_VOID : TILE_GRASS;
         const kind = tiles.get(`${x},${y}`);
         const byte = kind === undefined ? fallback : (TILE_BYTE_BY_KIND[kind] ?? fallback);
         buf[row + (x - minX + 1)] = byte;
@@ -164,14 +173,19 @@ export class TilemapRenderer {
       oy: number,
       texture: Texture | undefined = terrainTexture(byte, byte === 1 ? phase : 0),
     ): FillStyle | number => {
-      const exteriorWall = byte === 10 && this.palette !== 'interior';
-      if (exteriorWall) texture = terrainTexture(5);
+      const cave = this.palette === 'cave';
+      if (cave && byte === TILE_FLOOR) texture = terrainTexture(TILE_DIRT);
+      if (cave && byte === TILE_WALL) texture = terrainTexture(TILE_MOUNTAIN);
+      const exteriorWall = byte === TILE_WALL && this.palette !== 'interior' && !cave;
+      if (exteriorWall) texture = terrainTexture(TILE_DIRT);
       if (!texture) return paletteColor(this.palette, byte);
       // Preserve the distinctive colors of themed worlds; the overworld uses
       // the extracted palette, with a few biome-specific color adjustments.
       const color = exteriorWall
         ? 0x756351
-        : this.palette === 'overworld' || this.palette === 'interior'
+        : cave
+          ? paletteColor(this.palette, byte)
+          : this.palette === 'overworld' || this.palette === 'interior'
           ? (BIOME_TINT[byte] ?? 0xffffff)
           : paletteColor(this.palette, byte);
       return {

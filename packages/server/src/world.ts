@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import {
   OVERWORLD,
+  isCarvedWorld,
   TILE_GRASS,
   TILE_VOID,
   WALKABLE_TILES,
@@ -132,11 +133,18 @@ export class World {
 
   /** The spec for a world id, or undefined if nothing mints that id. */
   spec(world: string): WorldSpec | undefined {
-    if (world === OVERWORLD) {
-      return { ...(resolveWorld(OVERWORLD) as WorldSpec), width: this.width, height: this.height, seed: this.seed };
-    }
-    return resolveWorld(world);
+    const cached = this.specs.get(world);
+    if (cached) return cached;
+    const spec =
+      world === OVERWORLD
+        ? { ...(resolveWorld(OVERWORLD) as WorldSpec), width: this.width, height: this.height, seed: this.seed }
+        : resolveWorld(world);
+    if (spec) this.specs.set(world, spec);
+    return spec;
   }
+
+  /** Resolved specs by world id: every tile read asks, and derived ids parse a string. */
+  private readonly specs = new Map<string, WorldSpec>();
 
   /** Every world with state loaded right now. */
   activeWorlds(): string[] {
@@ -376,7 +384,7 @@ export class World {
     const chunk = this.store(world).getChunk(cx, cy);
     // Ungenerated ground reads as the world's own default: grass outdoors,
     // but VOID inside a building, where "not carved" means "not there".
-    if (!chunk) return this.spec(world)?.generator === 'rooms' ? TILE_VOID : TILE_GRASS;
+    if (!chunk) return isCarvedWorld(this.spec(world)) ? TILE_VOID : TILE_GRASS;
     return chunk[ly * CHUNK_SIZE + lx];
   }
 

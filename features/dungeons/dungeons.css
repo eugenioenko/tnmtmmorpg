@@ -1,0 +1,44 @@
+.dungeon-tracker {
+  padding: 9px 11px 10px;
+  pointer-events: auto;
+}
+
+.dungeon-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+  font: 600 13px/1.2 var(--font-title);
+  color: var(--gold-hi);
+  letter-spacing: 0.03em;
+}
+
+.dungeon-level {
+  margin-left: auto;
+  font: 600 11px var(--font-body);
+  color: var(--ink-faint);
+}
+
+.dungeon-goal {
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.dungeon-goal.done {
+  color: var(--good);
+  text-decoration: line-through;
+  text-decoration-color: rgba(143, 209, 111, 0.5);
+}
+
+.dungeon-copy {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.cave-gloom {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 58% 62% at 50% 50%, rgba(0, 0, 0, 0) 45%, rgba(4, 3, 2, 0.55) 80%, rgba(0, 0, 0, 0.82) 100%);
+}
