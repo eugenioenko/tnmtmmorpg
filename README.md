@@ -2,7 +2,7 @@
 
 A tick-based, grid-based multiplayer world that a group of friends extend by adding **features** — one folder each, no coordination, no merge conflicts.
 
-**Playing now at <https://tnmtmmorpg.yy-dev.top/>** — merging to `main` deploys there automatically ([how](deploy/README.md)).
+**Playing now at <https://mmorpg.skedoodle.top/>** — merging to `main` deploys there automatically ([how](deploy/README.md)).
 
 **The deliverable is not a game.** It is a base where shipping a feature is trivial, so that people keep shipping them — by hand, or by pointing an agent at this README — until *something* emerges. Maybe it becomes a game. Maybe it becomes an incoherent zoo. Maybe it starts falling over in interesting ways. Nobody knows yet, and that is the point: the base exists so the experiment can run.
 
