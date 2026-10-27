@@ -13,6 +13,12 @@ export interface ItemDef {
   useLabel?: string;
   /** Shop value in gold; selling returns part of it. */
   value?: number;
+  /**
+   * Wearable gear: which slot it fills and what it adds. Any feature can
+   * declare gear this way; whoever owns equipping (the character feature)
+   * reads it from the item registry.
+   */
+  equip?: { slot: 'weapon' | 'armor' | 'charm'; atk?: number; def?: number; hp?: number };
 }
 
 /** One input requirement of a recipe: match by exact item id OR by tag. */

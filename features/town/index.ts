@@ -323,7 +323,7 @@ function take(world: WorldAPI, id: number, itemId: string, n: number): boolean {
 
 function allItems(world: WorldAPI): ItemDef[] {
   const seen = new Map<string, ItemDef>();
-  for (const tag of ['merchandise', 'loot', 'consumable', 'equipment', 'material', 'herb', 'stone', 'seed']) {
+  for (const tag of ['merchandise', 'loot', 'consumable', 'equipment', 'material', 'tool', 'herb', 'stone', 'seed']) {
     for (const def of world.queryItemsByTag(tag)) seen.set(def.id, def);
   }
   return [...seen.values()];
@@ -484,7 +484,7 @@ function complete(world: WorldAPI, player: EntityState, npc: EntityState, reside
 }
 
 function shopStock(world: WorldAPI, resident: Resident): ItemDef[] {
-  const wanted = resident.shop === 'gear' ? ['weapon', 'armor', 'charm'] : ['potion', 'food'];
+  const wanted = resident.shop === 'gear' ? ['weapon', 'armor', 'charm', 'tool'] : ['potion', 'food'];
   return world
     .queryItemsByTag('merchandise')
     .filter((d) => d.value !== undefined && d.tags.some((t) => wanted.includes(t)))
