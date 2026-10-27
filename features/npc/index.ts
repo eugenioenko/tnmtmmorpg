@@ -2,6 +2,7 @@ import {
   definePlugin,
   isMovementComponent,
   isNPCComponent,
+  isStatsComponent,
   type DamageEvent,
   type Direction,
   type EntityState,
@@ -112,6 +113,9 @@ const CHASE_STOP_DISTANCE = 1;
 /** A chasing NPC whose target is adjacent swings this many ticks apart (1s at 10Hz). */
 const CHASE_ATTACK_INTERVAL = 10;
 
+/** A chase is abandoned once the target is this many tiles away (either axis). */
+const CHASE_GIVE_UP = 16;
+
 /** How far a chase path may search before it gives up and heads roughly there. */
 const CHASE_PATH_STEPS = 30;
 
@@ -208,6 +212,7 @@ export function findPath(
   toX: number,
   toY: number,
   maxSteps: number = CHASE_PATH_STEPS,
+  worldId?: string,
 ): WorldCoord[] {
   if (fromX === toX && fromY === toY) return [{ x: fromX, y: fromY }];
 
@@ -249,7 +254,7 @@ export function findPath(
       const ny = current.y + delta.y;
       const k = pathKey(nx, ny);
       if (visited.has(k)) continue;
-      if (!world.walkable(nx, ny)) continue; // water, mountains, out of bounds
+      if (!world.walkable(nx, ny, worldId)) continue; // water, mountains, out of bounds
       visited.add(k);
       const g = current.g + 1;
       open.push({ x: nx, y: ny, g, f: g + heuristic(nx, ny, toX, toY), parent: current });
@@ -345,7 +350,7 @@ function fleeDirection(
     const delta = DELTA[dir];
     const tx = entity.x + delta.x;
     const ty = entity.y + delta.y;
-    if (!world.walkable(tx, ty)) continue;
+    if (!world.walkable(tx, ty, entity.world)) continue;
     const dist = abs(tx - target.x) + abs(ty - target.y);
     if (dist > bestDist) {
       bestDist = dist;
@@ -385,7 +390,7 @@ function pickWanderDir(
     const delta = DELTA[dir];
     const tx = entity.x + delta.x;
     const ty = entity.y + delta.y;
-    if (!world.walkable(tx, ty)) continue;
+    if (!world.walkable(tx, ty, entity.world)) continue;
     if (!withinLeash(npc, tx, ty)) continue;
     return dir;
   }
@@ -404,14 +409,29 @@ function runBuiltinWander(world: WorldAPI, entity: EntityState, tick: number): v
   // chasing: step toward the target along a bounded A* path.
   if (npc.state === 'chasing') {
     const target = typeof npc.target === 'number' ? world.get(npc.target) : undefined;
-    if (target) {
+    // Give up on targets that left the world, fell, or simply got away.
+    const lost =
+      !target ||
+      (target.world ?? 'overworld') !== (entity.world ?? 'overworld') ||
+      abs(target.x - entity.x) > CHASE_GIVE_UP ||
+      abs(target.y - entity.y) > CHASE_GIVE_UP ||
+      (isStatsComponent(target.components.stats) && target.components.stats.hp <= 0);
+    if (target && !lost) {
       if (
         abs(target.x - entity.x) <= CHASE_STOP_DISTANCE &&
         abs(target.y - entity.y) <= CHASE_STOP_DISTANCE
       ) {
         movement.dir = undefined; // in reach: stand and face it
       } else {
-        const path = findPath(world, entity.x, entity.y, target.x, target.y, CHASE_PATH_STEPS);
+        const path = findPath(
+          world,
+          entity.x,
+          entity.y,
+          target.x,
+          target.y,
+          CHASE_PATH_STEPS,
+          entity.world,
+        );
         const step = path[1];
         movement.dir = step ? directionTo(entity, step) : undefined;
       }
@@ -574,6 +594,7 @@ export function createNPCSystem(): (world: WorldAPI, delta: number) => void {
     if (npc.state !== 'chasing' || typeof npc.target !== 'number') return;
     const target = world.get(npc.target);
     if (!target || abs(target.x - entity.x) > 1 || abs(target.y - entity.y) > 1) return;
+    if ((target.world ?? 'overworld') !== (entity.world ?? 'overworld')) return;
     const last = lastChaseAttack.get(entity.id) ?? -Infinity;
     if (tick - last < CHASE_ATTACK_INTERVAL) return;
     lastChaseAttack.set(entity.id, tick);

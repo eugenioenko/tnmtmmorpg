@@ -1,15 +1,19 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, type FederatedPointerEvent } from 'pixi.js';
 import type { DeltaSnapshot, EntityState, FullSnapshot, TileState } from '@game/shared';
-import { MAX_VIEW_HEIGHT, MAX_VIEW_WIDTH, OVERWORLD, TILE_SIZE } from '@game/shared';
+import {
+  MAX_VIEW_HEIGHT,
+  MAX_VIEW_WIDTH,
+  OVERWORLD,
+  TILE_BYTE_BY_KIND,
+  TILE_SIZE,
+  WALKABLE_TILES,
+} from '@game/shared';
 import { Camera } from './camera.ts';
-import { EntityRenderer } from './renderer/entities.ts';
+import { EntityRenderer, type EntityPointer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
 import { loadArt } from './art.ts';
 
 export { TILE_SIZE } from './renderer/tilemap.ts';
-
-/** How long a snapshot pair takes to complete its lerp; mirrors the server tick. */
-const TICK_MS = 100;
 
 /** Live numbers the UI overlay polls. */
 export interface GameState {
@@ -25,6 +29,7 @@ export interface GameState {
   world: string;
   /** Feature systems the server guard auto-disabled; shown in a banner. */
   disabledFeatures: string[];
+  localEntityId: number | null;
 }
 
 /**
@@ -48,9 +53,15 @@ interface BufferedSnapshot {
   receivedAt: number;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return value < min ? min : value > max ? max : value;
+/** Ground and entity pointer input, routed to the controls layer. */
+export interface PointerSink {
+  entity(id: number, type: EntityPointer, shift: boolean): void;
+  ground(tileX: number, tileY: number, shift: boolean): void;
+  hoverTile(tileX: number, tileY: number): void;
 }
+
+/** Hooks fired once per authoritative snapshot, after the model is patched. */
+export type SnapshotListener = (state: WorldState) => void;
 
 /**
  * The PixiJS game layer. Renders tiles and entities from the last two
@@ -85,6 +96,12 @@ export class Game {
   private fpsWindowMs = 0;
   private readonly app: Application;
   private readonly worldLayer: Container;
+  private readonly snapshotListeners: SnapshotListener[] = [];
+  private pointerSink: PointerSink | null = null;
+  private frameHooks: ((now: number) => void)[] = [];
+  private readonly markerLayer = new Graphics();
+  private marker: { x: number; y: number } | null = null;
+  private markerSince = 0;
   /**
    * Adopt the server's declared view window (set in create()). The server is
    * authoritative about how much world it sends; the canvas is capped so the
@@ -100,6 +117,7 @@ export class Game {
   ) {
     this.app = app;
     this.worldLayer = worldLayer;
+    worldLayer.addChildAt(this.markerLayer, 1);
     this.tilemap = new TilemapRenderer(tileLayer);
     this.renderer = new EntityRenderer(entityLayer);
     this.camera = new Camera();
@@ -113,7 +131,12 @@ export class Game {
       playerY: 0,
       world: OVERWORLD,
       disabledFeatures: [],
+      localEntityId: null,
     };
+    this.renderer.setPointerHandler((id, type, e) => {
+      if (type === 'tap') e.stopPropagation();
+      this.pointerSink?.entity(id, type, e.shiftKey);
+    });
   }
 
   /** Boot the Pixi app, wire the layers and start the 60fps render ticker. */
@@ -177,6 +200,16 @@ export class Game {
     app.stage.addChild(worldLayer);
 
     const game = new Game(app, worldLayer, tileLayer, entityLayer);
+    app.stage.eventMode = 'static';
+    app.stage.hitArea = app.screen;
+    app.stage.on('pointertap', (e: FederatedPointerEvent) => {
+      const tile = game.screenToTile(e.global.x, e.global.y);
+      game.pointerSink?.ground(tile.x, tile.y, e.shiftKey);
+    });
+    app.stage.on('pointermove', (e: FederatedPointerEvent) => {
+      const tile = game.screenToTile(e.global.x, e.global.y);
+      game.pointerSink?.hoverTile(tile.x, tile.y);
+    });
     /**
      * Adopt the server's declared view window. The server is authoritative
      * about how much world it sends; rendering past it would show ground the
@@ -233,48 +266,23 @@ export class Game {
     this.tilemap.setWorld(latest.snapshot.world);
     this.tilemap.rebuild(this.knownTiles, this.camera.centreX, this.camera.centreY, viewW, viewH);
 
-    // Render ~1 tick behind: when the newest snapshot arrives we are at the
-    // previous one (alpha 0) and ease toward it over the next tick interval.
-    //
-    // Only ever pair snapshots from the SAME world. Straight after travelling
-    // the buffer still holds the world just left, and interpolating across
-    // the pair resurrects that world's entities — they get rebuilt from the
-    // older snapshot on the very frame the renderer was cleared, so the old
-    // map's contents stand around in the new one.
-    const previous = this.buffer.length >= 2 ? this.buffer[this.buffer.length - 2] : undefined;
-    const older = previous?.snapshot.world === latest.snapshot.world ? previous : undefined;
-    const alpha = older ? clamp((performance.now() - latest.receivedAt) / TICK_MS, 0, 1) : 1;
-
-    // Desired render positions: entities in both snapshots lerp; entities in
-    // only the older one freeze at their last position; entities in only the
-    // newest one (fresh spawns) appear at their current position.
     const byId = new Map<number, EntityState>();
-    if (older) {
-      for (const entity of older.snapshot.entities) byId.set(entity.id, entity);
-    }
-    for (const entity of latest.snapshot.entities) byId.set(entity.id, entity);
-
-    const positions = new Map<number, { x: number; y: number }>();
-    if (older) {
-      for (const entity of older.snapshot.entities) {
-        positions.set(entity.id, { x: entity.x, y: entity.y });
-      }
-    }
+    const targets = new Map<number, { x: number; y: number }>();
     for (const entity of latest.snapshot.entities) {
-      const from = positions.get(entity.id);
-      positions.set(entity.id, {
-        x: from ? from.x + (entity.x - from.x) * alpha : entity.x,
-        y: from ? from.y + (entity.y - from.y) * alpha : entity.y,
-      });
+      byId.set(entity.id, entity);
+      targets.set(entity.id, { x: entity.x, y: entity.y });
     }
-
-    this.renderer.updatePositions(positions, byId, performance.now());
+    const now = performance.now();
+    for (const hook of this.frameHooks) hook(now);
+    this.renderer.updatePositions(targets, byId, now, this.app.ticker.deltaMS);
 
     // Crafting progress bars sit on top of the entities they describe.
     this.renderer.updateCraftBars(latest.snapshot);
 
     // Phase 7: health bars above damaged entities.
     this.renderer.updateHealthBars(latest.snapshot);
+
+    this.drawMarker(now);
 
     // The camera advanced at the top of the frame (the tilemap is drawn
     // around it); apply its offset to the whole world layer.
@@ -347,21 +355,100 @@ export class Game {
     // Ground-item stack counts change when someone picks up part of a
     // stack; refresh the count labels directly from the newest state.
     this.renderer.refreshCountLabels(worldState.entities);
+    for (const listener of this.snapshotListeners) listener(worldState);
+  }
+
+  /** Click-to-move destination marker; null hides it. */
+  setMarker(tile: { x: number; y: number } | null): void {
+    this.marker = tile;
+    this.markerSince = performance.now();
+  }
+
+  private drawMarker(now: number): void {
+    const g = this.markerLayer;
+    g.clear();
+    if (!this.marker) return;
+    const age = (now - this.markerSince) / 1000;
+    const cx = this.marker.x * TILE_SIZE + TILE_SIZE / 2;
+    const cy = this.marker.y * TILE_SIZE + TILE_SIZE / 2 + 6;
+    const intro = age < 0.25 ? 1.6 - age * 2.4 : 1;
+    const pulse = 1 + ((age * 2) % 1) * 0.15;
+    const r = 9 * intro * pulse;
+    g.ellipse(cx, cy, r, r * 0.5).stroke({ width: 2, color: 0xffe08a, alpha: 0.9 });
+    g.ellipse(cx, cy, r * 0.45, r * 0.22).fill({ color: 0xffe08a, alpha: 0.55 });
+  }
+
+  onSnapshot(listener: SnapshotListener): void {
+    this.snapshotListeners.push(listener);
+  }
+
+  onFrame(hook: (now: number) => void): void {
+    this.frameHooks.push(hook);
+  }
+
+  setPointerSink(sink: PointerSink | null): void {
+    this.pointerSink = sink;
+  }
+
+  /** Canvas pixel -> world tile, through the camera. */
+  screenToTile(sx: number, sy: number): { x: number; y: number } {
+    const wx = sx + this.camera.x;
+    const wy = sy + this.camera.y;
+    const fl = (v: number): number => (v >= 0 ? v | 0 : (v | 0) - (v % 1 === 0 ? 0 : 1));
+    return { x: fl(wx / TILE_SIZE), y: fl(wy / TILE_SIZE) };
+  }
+
+  /** World tile -> canvas pixel (top-left of the tile). */
+  tileToScreen(x: number, y: number): { x: number; y: number } {
+    return { x: x * TILE_SIZE - this.camera.x, y: y * TILE_SIZE - this.camera.y };
+  }
+
+  /** Core's walkability rule over the tiles this client knows about. */
+  walkable(x: number, y: number): boolean {
+    const kind = this.knownTiles.get(`${x},${y}`);
+    if (kind === undefined) return true;
+    const byte = TILE_BYTE_BY_KIND[kind];
+    return byte !== undefined && WALKABLE_TILES.has(byte);
+  }
+
+  tileKind(x: number, y: number): string {
+    return this.knownTiles.get(`${x},${y}`) ?? 'grass';
+  }
+
+  entity(id: number): EntityState | undefined {
+    return this.modelEntities.get(id);
+  }
+
+  entities(): IterableIterator<EntityState> {
+    return this.modelEntities.values();
+  }
+
+  visualTile(id: number): { x: number; y: number } | null {
+    return this.renderer.visualTile(id);
+  }
+
+  setHovered(id: number | null): void {
+    this.renderer.setHovered(id);
+  }
+
+  setTarget(id: number | null): void {
+    this.renderer.setTarget(id);
+  }
+
+  floatText(x: number, y: number, text: string, color: number, size?: number): void {
+    this.renderer.floatText(x, y, text, color, size);
+  }
+
+  /** Canvas element, for cursor styling. */
+  canvas(): HTMLCanvasElement {
+    return this.app.canvas;
   }
 
   /** Mark the entity id that belongs to this browser tab. */
   setLocalEntity(id: number | null): void {
     this.localEntityId = id;
+    this.state.localEntityId = id;
     this.renderer.setLocalEntity(id); // repaints the white-outline highlight
-  }
-
-  /**
-   * Phase 7: wire up click-to-attack. The handler receives the id of the
-   * clicked entity (never the local player's own); the caller sends the
-   * 'attack' intent. Pass null to disable.
-   */
-  setAttackHandler(handler: ((entityId: number) => void) | null): void {
-    this.renderer.setAttackHandler(handler);
   }
 
   /** The local player's entity from the newest state, or undefined. */

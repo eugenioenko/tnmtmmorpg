@@ -5,8 +5,9 @@ exteriors with colliding walls, connected paths, a well, storage props, trees,
 and fenced crops. A nearby lake, woodland, marsh, and northern highlands show
 the terrain types. Generation runs a few rows per tick and persists. Outside
 the village, chunk decoration places homesteads on suitable ground. All props
-use the shared atlas through their `appearance` component. Send `buildings:enter`
-while standing on or beside a door to go in, and again at the exit to come
+use the shared atlas through their `appearance` component. Clicking a building
+(or pressing Space beside its door) sends `buildings:enter`, declared as the
+door's interaction in `client.tsx`; the same command at the exit brings you
 back out where you started.
 
 Each building opens onto a furnished interior. An interior is a separate world

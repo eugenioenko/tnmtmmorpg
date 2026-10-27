@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react';
 import type {
   CraftingComponent,
   CraftingJob,
   EntityState,
-  Intent,
   InventoryComponent,
   RecipeDef,
   RecipeInput,
@@ -12,179 +10,104 @@ import type { Game } from '../game.ts';
 import { emojiForItem } from '../emoji-atlas.ts';
 import { getItemDef } from '../items.ts';
 import { allRecipes } from '../recipes.ts';
-
-const POLL_MS = 200;
+import { entityName } from '../interactions.ts';
+import { useSnapshots, type HudRuntime } from './runtime.ts';
 
 /**
- * Phase 6 recipe browser (core UI): lists the recipes craftable at the
- * station the player stands next to (Chebyshev distance 1, like transfers),
- * with a craft button per recipe and progress/cancel controls for the jobs
- * at that station. Recipe definitions come from the registry the server
- * pushes on connect; job state comes from the station entity's `crafting`
- * component in the snapshots. All mutations go through intents — the server
- * is authoritative (it re-validates inputs, adjacency and ownership).
+ * Crafting window content: the recipes of the station the player stands next
+ * to (Chebyshev distance 1), each with a craft button, and progress/cancel
+ * controls for the jobs at that station. Recipe definitions come from the
+ * registry the server pushes on connect; job state comes from the station's
+ * `crafting` component. The server re-validates inputs, adjacency and
+ * ownership.
  */
-export function RecipePanel({
-  game,
-  sendIntent,
-}: {
-  game: Game;
-  sendIntent: (intent: Intent) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState(() => collect(game));
-
-  useEffect(() => {
-    const id = window.setInterval(() => setData(collect(game)), POLL_MS);
-    return () => window.clearInterval(id);
-  }, [game]);
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="craft-toggle-btn"
-        aria-label="open recipe panel"
-        title="recipe browser"
-        onClick={(event) => {
-          setOpen(true);
-          event.currentTarget.blur(); // keep keyboard shortcuts working
-        }}
-      >
-        ⚒️
-      </button>
-    );
-  }
-
-  const { station, recipes, crafting, player, inventory } = data;
+export function RecipePanel({ rt }: { rt: HudRuntime }) {
+  useSnapshots(rt);
+  const { station, recipes, crafting, player, inventory } = collect(rt.game);
+  const sendIntent = rt.sendIntent;
   const jobs = crafting ? [...crafting.activeJobs, ...crafting.queue] : [];
 
+  if (!station) {
+    return <div className="muted">Stand beside a crafting station to see what it can make.</div>;
+  }
   return (
-    <div
-      className="recipe-panel"
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <div className="recipe-header">
-        <span>Crafting</span>
-        <span className="recipe-station">{station ? station.kind : 'no station'}</span>
-        <button
-          type="button"
-          className="recipe-close"
-          aria-label="close recipe panel"
-          onClick={(event) => {
-            setOpen(false);
-            event.currentTarget.blur();
-          }}
-        >
-          ✕
-        </button>
-      </div>
-
-      {!station ? (
-        <div className="recipe-hint">stand next to a station to see its recipes</div>
-      ) : (
-        <>
-          {recipes.length === 0 ? (
-            <div className="recipe-hint">this station has no recipes</div>
-          ) : (
-            recipes.map((recipe) => {
-              const affordable = canAfford(inventory, recipe);
-              return (
-                <div key={recipe.id} className="recipe-row">
-                  <div className="recipe-name">{recipeName(recipe)}</div>
-                  <div className="recipe-line">
-                    in:{' '}
-                    {recipe.inputs.length === 0
-                      ? 'nothing'
-                      : recipe.inputs
-                          .map((input) => {
-                            const { emoji, text } = inputSummary(input);
-                            return `${input.count}× ${emoji} ${text}`;
-                          })
-                          .join(', ')}
-                  </div>
-                  <div className="recipe-line">
-                    out:{' '}
-                    {recipe.outputs
-                      .map((output) => {
-                        const def = getItemDef(output.id);
-                        return `${output.count}× ${emojiForItem(output.id, def?.tags)} ${
-                          def?.name ?? output.id
-                        }`;
-                      })
-                      .join(', ')}
-                  </div>
-                  <div className="recipe-line">time: {recipe.ticks} ticks</div>
-                  <button
-                    type="button"
-                    className="recipe-craft-btn"
-                    disabled={!affordable}
-                    title={affordable ? undefined : 'missing inputs'}
-                    onClick={(event) => {
-                      sendIntent({
-                        t: 'intent',
-                        kind: 'craft',
-                        recipeId: recipe.id,
-                        stationEntityId: station.id,
-                      });
-                      event.currentTarget.blur();
-                    }}
-                  >
-                    craft
-                  </button>
-                </div>
-              );
-            })
-          )}
-
-          {jobs.length > 0 && (
-            <div className="recipe-jobs">
-              <div className="recipe-jobs-title">jobs at this station</div>
-              {jobs.map((job, index) => {
-                const recipe = allRecipes().find((r) => r.id === job.recipeId);
-                const owned = player !== null && job.crafterEntityId === player.id;
-                const queued = crafting !== null && !crafting.activeJobs.includes(job);
-                const jobIndex = crafting && player ? jobIndexOf(crafting, player.id, job) : -1;
-                // No Math.* (banned by lint): ~~ is floor for positives, so
-                // +0.5 rounds; the > 100 clamp caps a completed job.
-                const rawPct = ~~((job.progress / job.totalTicks) * 100 + 0.5);
-                const pct = rawPct > 100 ? 100 : rawPct;
-                return (
-                  <div key={`${index}-${job.crafterEntityId}`} className="craft-job">
-                    <div className="craft-job-name">
-                      {queued ? '⏳ queued: ' : ''}
-                      {recipe ? recipeName(recipe) : job.recipeId}
-                      {owned ? ' (you)' : ''} — {job.progress}/{job.totalTicks} ticks
-                    </div>
-                    <div className="craft-track">
-                      <div className="craft-fill" style={{ width: `${queued ? 0 : pct}%` }} />
-                    </div>
-                    {owned && (
-                      <button
-                        type="button"
-                        className="craft-cancel-btn"
-                        onClick={(event) => {
-                          sendIntent({
-                            t: 'intent',
-                            kind: 'cancelCraft',
-                            jobIndex,
-                            stationEntityId: station.id,
-                          });
-                          event.currentTarget.blur();
-                        }}
-                      >
-                        cancel
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+    <>
+      <div className="section-title">{entityName(station)}</div>
+      {recipes.length === 0 && <div className="muted">This station has no recipes.</div>}
+      {recipes.map((recipe) => {
+        const affordable = canAfford(inventory, recipe);
+        return (
+          <div key={recipe.id} className="recipe">
+            <div className="recipe-head">
+              <span className="recipe-name">{recipeName(recipe)}</span>
+              <button
+                type="button"
+                className="btn small"
+                disabled={!affordable}
+                title={affordable ? undefined : 'missing ingredients'}
+                onClick={(event) => {
+                  sendIntent({ t: 'intent', kind: 'craft', recipeId: recipe.id, stationEntityId: station.id });
+                  event.currentTarget.blur();
+                }}
+              >
+                Craft
+              </button>
             </div>
-          )}
+            <div className={`recipe-io${affordable ? '' : ' missing'}`}>
+              {recipe.inputs.length === 0
+                ? 'No ingredients'
+                : recipe.inputs
+                    .map((input) => {
+                      const { emoji, text } = inputSummary(input);
+                      return `${input.count}× ${emoji} ${text}`;
+                    })
+                    .join(', ')}{' '}
+              · {(recipe.ticks / 10).toFixed(1)}s
+            </div>
+          </div>
+        );
+      })}
+
+      {jobs.length > 0 && (
+        <>
+          <div className="section-title">In progress</div>
+          {jobs.map((job, index) => {
+            const recipe = allRecipes().find((r) => r.id === job.recipeId);
+            const owned = player !== null && job.crafterEntityId === player.id;
+            const queued = crafting !== null && !crafting.activeJobs.includes(job);
+            const jobIndex = crafting && player ? jobIndexOf(crafting, player.id, job) : -1;
+            const rawPct = ~~((job.progress / job.totalTicks) * 100 + 0.5);
+            const pct = rawPct > 100 ? 100 : rawPct;
+            return (
+              <div key={`${index}-${job.crafterEntityId}`} className="recipe">
+                <div className="recipe-head">
+                  <span className="recipe-io">
+                    {queued ? 'Queued: ' : ''}
+                    {recipe ? recipeName(recipe) : job.recipeId}
+                    {owned ? ' (yours)' : ''}
+                  </span>
+                  {owned && (
+                    <button
+                      type="button"
+                      className="btn small danger"
+                      onClick={(event) => {
+                        sendIntent({ t: 'intent', kind: 'cancelCraft', jobIndex, stationEntityId: station.id });
+                        event.currentTarget.blur();
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                <div className="craft-track">
+                  <div className="craft-fill" style={{ width: `${queued ? 0 : pct}%` }} />
+                </div>
+              </div>
+            );
+          })}
         </>
       )}
-    </div>
+    </>
   );
 }
 

@@ -16,10 +16,17 @@ import {
  *                 NPC swung at its target. Core does not know what a swing
  *                 does; this feature decides. With the feature disabled,
  *                 NPC swings are simply inert.
- * - two events:   'entity:damage' and 'entity:death', both announced
+ * - three events: 'entity:damage' and 'entity:death', both announced
  *                 spatially (only entities near the victim hear them), so
  *                 other features hook loot, graves or aggro without
- *                 importing anything from here.
+ *                 importing anything from here; and 'combat:killed', emitted
+ *                 once globally with the victim's last state, because a
+ *                 spatial event is delivered once per bystander and the
+ *                 victim is gone by the time listeners run.
+ *
+ * Players are never despawned: their entity belongs to a live connection.
+ * A player at 0 hp stays put until another feature (character) revives
+ * them; with that feature absent they are restored to full on the spot.
  *
  * Everything runs on the sanctioned WorldAPI: get() for a detached read,
  * update() to write the new stats back, despawn() on death.
@@ -40,6 +47,20 @@ const DEATH_EVENT_RADIUS = 30;
 const abs = (n: number): number => (n < 0 ? -n : n);
 const max = (a: number, b: number): number => (a > b ? a : b);
 const floor = (n: number): number => n | 0;
+
+/** Minimum ticks between two player swings; NPC swings are paced by their AI. */
+const PLAYER_SWING_TICKS = 7;
+
+/** Payload of 'combat:killed'. */
+export interface KilledEvent {
+  victimId: number;
+  killerId: number;
+  kind: string;
+  x: number;
+  y: number;
+  world: string;
+  components: Record<string, unknown>;
+}
 
 /**
  * Apply one melee hit from `attackerId` onto `targetId`:
@@ -64,8 +85,10 @@ export function applyAttack(world: WorldAPI, attackerId: number, targetId: numbe
   const tStats = target.components.stats;
   if (!isStatsComponent(aStats) || !isStatsComponent(tStats)) return;
 
-  // Adjacency gate: must be within 1 tile (Chebyshev distance).
+  // Adjacency gate: must be within 1 tile (Chebyshev distance), same world.
   if (abs(attacker.x - target.x) > 1 || abs(attacker.y - target.y) > 1) return;
+  if ((attacker.world ?? 'overworld') !== (target.world ?? 'overworld')) return;
+  if (tStats.hp <= 0 || aStats.hp <= 0) return;
 
   const rawDamage = aStats.atk;
   const finalDamage = max(1, floor(rawDamage - tStats.def * 0.5));
@@ -77,23 +100,43 @@ export function applyAttack(world: WorldAPI, attackerId: number, targetId: numbe
 
   // Spatial announce: only entities within DAMAGE_EVENT_RADIUS of the hit
   // hear it; each nearby entity receives the payload plus its own id.
-  world.emitNear(target.x, target.y, DAMAGE_EVENT_RADIUS, 'entity:damage', {
-    targetId,
-    sourceId: attackerId,
-    amount: finalDamage,
-    rawAmount: rawDamage,
-    element: 'physical',
-  } satisfies DamageEvent);
+  world.emitNear(
+    target.x,
+    target.y,
+    DAMAGE_EVENT_RADIUS,
+    'entity:damage',
+    {
+      targetId,
+      sourceId: attackerId,
+      amount: finalDamage,
+      rawAmount: rawDamage,
+      element: 'physical',
+    } satisfies DamageEvent,
+    target.world,
+  );
 
   if (hp <= 0) {
     // Spatial too: only entities within DEATH_EVENT_RADIUS need to know
     // something died. The victim is despawned right after, so it is not
     // among the receivers when the event flushes.
-    world.emitNear(target.x, target.y, DEATH_EVENT_RADIUS, 'entity:death', {
-      entityId: targetId,
+    world.emitNear(
+      target.x,
+      target.y,
+      DEATH_EVENT_RADIUS,
+      'entity:death',
+      { entityId: targetId, killerId: attackerId } satisfies DeathEvent,
+      target.world,
+    );
+    world.emit('combat:killed', {
+      victimId: targetId,
       killerId: attackerId,
-    } satisfies DeathEvent);
-    world.despawn(targetId);
+      kind: target.kind,
+      x: target.x,
+      y: target.y,
+      world: target.world ?? 'overworld',
+      components: { ...target.components, stats: { ...tStats, hp: 0 } },
+    } satisfies KilledEvent);
+    if (target.kind !== 'player') world.despawn(targetId);
   }
 }
 
@@ -104,12 +147,35 @@ function readId(args: unknown, key: string): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
 }
 
+/** Feature-local swing pacing; a tick counter of our own, as core's is not exposed. */
+let swingClock = 0;
+const lastSwing = new Map<number, number>();
+
 export default definePlugin({
   id: 'combat',
   items: [],
   recipes: [],
   entityKinds: [],
-  systems: [],
+  systems: [
+    {
+      name: 'combat:clock',
+      fn: (world) => {
+        swingClock++;
+        if (swingClock % 600 === 0) {
+          for (const id of lastSwing.keys()) if (!world.get(id)) lastSwing.delete(id);
+        }
+        // Without a reviver installed, a felled player gets back up at once.
+        if (swingClock % 20 === 0) {
+          for (const p of world.query('player', 'stats')) {
+            const stats = p.components.stats;
+            if (isStatsComponent(stats) && stats.hp <= 0 && p.components.character === undefined) {
+              world.update(p.id, { stats: { ...stats, hp: stats.maxHp } });
+            }
+          }
+        }
+      },
+    },
+  ],
 
   commands: [
     {
@@ -123,6 +189,10 @@ export default definePlugin({
           world.log(`entity ${entityId} attack: targetId must be an integer - rejected`);
           return;
         }
+        const now = swingClock;
+        const last = lastSwing.get(entityId) ?? -Infinity;
+        if (now - last < PLAYER_SWING_TICKS) return;
+        lastSwing.set(entityId, now);
         applyAttack(world, entityId, targetId);
       },
     },
