@@ -1,0 +1,3 @@
+# character
+
+Who a player is: a generated name (renamable), experience and levels (health, attack and defense grow each level), gold, equipment slots (weapon, armor, charm), healing items, out-of-combat regeneration, and respawning in the village square on death with a 10% gold penalty. Other features reward players by emitting `character:grant { entityId, xp?, gold?, reason? }` and spend their gold with `character:charge { entityId, gold, then(world, ok) }`; nobody writes the `character` component but this feature. Progress survives reconnects: the client keeps a private token in `localStorage` and sends `character:claim`, and the record is stored with `world.getSet`. The client half adds the Character window (C) and relays the character's log lines into the HUD.

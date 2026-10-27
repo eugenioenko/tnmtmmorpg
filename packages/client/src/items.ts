@@ -1,4 +1,5 @@
 import type { ItemDef } from '@game/shared';
+import { registerItemEmoji } from './emoji-atlas.ts';
 
 /**
  * Client-side item registry: every item definition shipped by the loaded
@@ -10,7 +11,10 @@ const items = new Map<string, ItemDef>();
 
 /** Register the items declared by one feature's client plugin. */
 export function registerItems(defs: ItemDef[]): void {
-  for (const def of defs) items.set(def.id, def);
+  for (const def of defs) {
+    items.set(def.id, def);
+    if (def.icon) registerItemEmoji(def.id, def.icon);
+  }
 }
 
 /** The item definition for an id, or undefined (unknown / feature not loaded). */

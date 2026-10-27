@@ -211,6 +211,51 @@ export interface ChunkArea {
 }
 
 /**
+ * A player-facing action on an entity. The client walks the player within
+ * `range` tiles (Chebyshev, default 1) and sends `{ kind: intent, targetId }`.
+ * An entity may also carry an `interact` component of this shape, which
+ * overrides the kind-level declaration.
+ */
+export interface Interaction {
+  intent: string;
+  /** Verb shown in prompts and tooltips, e.g. 'Enter', 'Talk'. */
+  label: string;
+  range?: number;
+}
+
+/**
+ * What feature UI gets from the client: read-only views of the newest
+ * snapshot, a way to act, and a line in the message log. Components are
+ * plain React; they re-render by subscribing to snapshots.
+ */
+export interface ClientAPI {
+  localPlayer(): EntityState | undefined;
+  entity(id: number): EntityState | undefined;
+  itemDef(id: string): ItemDef | undefined;
+  itemIcon(id: string): string;
+  /** Called after every snapshot; returns the unsubscribe. */
+  subscribe(listener: () => void): () => void;
+  sendIntent(intent: { t: 'intent'; kind: string; [key: string]: unknown }): void;
+  notify(text: string, tone?: 'info' | 'good' | 'bad' | 'loot' | 'quest' | 'level'): void;
+  /** Open or close one of the HUD windows by id. */
+  toggleWindow(id: string, open?: boolean): void;
+  /** A large centred announcement that fades by itself. */
+  banner(text: string, sub?: string, kind?: 'level' | 'death' | 'info'): void;
+}
+
+export interface ClientWindow {
+  title: string;
+  /** Emoji or short glyph for the action-bar button. */
+  icon: string;
+  /** KeyboardEvent.code that toggles it, e.g. 'KeyC'. */
+  hotkey?: string;
+  /** React component receiving `{ client }`. */
+  component: unknown;
+  /** Lower sorts first on the action bar. */
+  order?: number;
+}
+
+/**
  * Marks an object as a server feature plugin. Identity at runtime; the
  * loader validates the shape at boot and registers every registry.
  */
@@ -227,8 +272,15 @@ export function definePlugin(plugin: PluginAPI): PluginAPI {
  */
 export function defineClient(plugin: {
   items?: ItemDef[];
+  /** Developer panels, shown in the debug drawer (F3). */
   panels?: Record<string, unknown>;
   sprites?: Record<string, string>;
+  /** Entity kind -> what clicking it or pressing Space beside it does. */
+  interactions?: Record<string, Interaction>;
+  /** Player-facing windows, framed by the HUD and listed on the action bar. */
+  windows?: Record<string, ClientWindow>;
+  /** Always-on HUD widgets; each receives `{ client }`. */
+  hud?: Record<string, unknown>;
 }): unknown {
   return plugin;
 }

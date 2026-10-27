@@ -4,6 +4,15 @@ export interface ItemDef {
   name: string;
   tags: string[];
   stack: number;
+  /** Optional presentation, read by the client only. */
+  icon?: string;
+  description?: string;
+  /** Feature command sent as { kind: use, slot } when the player uses the item. */
+  use?: string;
+  /** Button text for `use`, e.g. 'Drink' or 'Equip'. */
+  useLabel?: string;
+  /** Shop value in gold; selling returns part of it. */
+  value?: number;
 }
 
 /** One input requirement of a recipe: match by exact item id OR by tag. */

@@ -2,10 +2,11 @@ import { createRoot } from 'react-dom/client';
 import {
   decodeServerMessage,
   defineClient,
+  type ClientWindow,
   type DeltaSnapshot,
-  type Direction,
   type FullSnapshot,
   type Intent,
+  type Interaction,
   type ItemDef,
   type RecipesMessage,
   type WelcomeMessage,
@@ -14,8 +15,10 @@ import { registerEmoji } from './emoji-atlas.ts';
 import { createGame, type Game } from './game.ts';
 import { registerItems } from './items.ts';
 import { registerRecipes } from './recipes.ts';
-import { App, type FeaturePanel } from './ui/App.tsx';
-import { INVENTORY_TOGGLE_EVENT } from './ui/InventoryPanel.tsx';
+import { registerInteractions } from './interactions.ts';
+import { Controls } from './controls.ts';
+import { App, registerCoreWindows, type FeatureComponent, type FeaturePanel } from './ui/App.tsx';
+import { HudRuntime } from './ui/runtime.ts';
 
 const WS_URL = (import.meta.env?.VITE_WS_URL as string | undefined) ?? 'ws://localhost:3010';
 const RECONNECT_DELAY_MS = 1000;
@@ -25,49 +28,6 @@ interface Pong {
   t: 'pong';
   ts: number;
 }
-
-/** Arrow keys: ordinary one-tile steps. */
-const ARROW_TO_DIR: Record<string, Direction> = {
-  ArrowUp: 'n',
-  ArrowDown: 's',
-  ArrowRight: 'e',
-  ArrowLeft: 'w',
-};
-
-/** WASD: long strides, for crossing a 10000x10000 world on foot. */
-const WASD_TO_DIR: Record<string, Direction> = {
-  w: 'n',
-  s: 's',
-  d: 'e',
-  a: 'w',
-  W: 'n',
-  S: 's',
-  D: 'e',
-  A: 'w',
-};
-
-/** Tiles per WASD press. The server caps this at MAX_MOVE_DIST. */
-const STRIDE = 100;
-
-/**
- * IJKL pans the camera without moving the player — the view is not welded
- * to the character. The range is clamped to the margin the server sends
- * beyond the visible area, so free-look can never show ground the client
- * was not given. 'o' snaps the view back onto the player.
- */
-const PAN_KEYS: Record<string, { x: number; y: number }> = {
-  i: { x: 0, y: -1 },
-  k: { x: 0, y: 1 },
-  j: { x: -1, y: 0 },
-  l: { x: 1, y: 0 },
-  I: { x: 0, y: -1 },
-  K: { x: 0, y: 1 },
-  J: { x: -1, y: 0 },
-  L: { x: 1, y: 0 },
-};
-
-/** World pixels per pan keypress. */
-const PAN_STEP = 64;
 
 function isFullSnapshot(value: unknown): value is FullSnapshot {
   if (typeof value !== 'object' || value === null) return false;
@@ -122,11 +82,6 @@ function readDisabledFeatures(msg: { disabledFeatures?: unknown }): string[] {
     : [];
 }
 
-/** True when the event originated inside the UI overlay — panels own those keys/clicks. */
-function originatesInOverlay(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest('#ui-overlay') !== null;
-}
-
 /**
  * Feature discovery on the client: every features/<name>/client.tsx is
  * loaded eagerly at boot (Vite resolves the glob relative to this file).
@@ -137,15 +92,24 @@ function originatesInOverlay(target: EventTarget | null): boolean {
  */
 const featureModules = import.meta.glob('../../../features/*/client.tsx', { eager: true });
 
-/** Register every loaded feature's items, panels and sprites; returns the panels. */
-function loadFeaturePanels(): Record<string, FeaturePanel> {
-  const panels: Record<string, FeaturePanel> = {};
+interface LoadedFeatures {
+  devPanels: Record<string, FeaturePanel>;
+  windows: Record<string, ClientWindow>;
+  hud: Record<string, FeatureComponent>;
+}
+
+/** Register every loaded feature's items, sprites and interactions; collect its UI. */
+function loadFeatures(): LoadedFeatures {
+  const loaded: LoadedFeatures = { devPanels: {}, windows: {}, hud: {} };
   for (const path of Object.keys(featureModules)) {
     const mod = featureModules[path] as { default?: unknown };
     const plugin = defineClient(mod.default ?? mod) as {
       items?: ItemDef[];
       panels?: Record<string, unknown>;
       sprites?: Record<string, string>;
+      interactions?: Record<string, Interaction>;
+      windows?: Record<string, ClientWindow>;
+      hud?: Record<string, unknown>;
     };
     if (typeof plugin !== 'object' || plugin === null) {
       console.error(`[client] ${path}: default export is not a defineClient plugin - skipping`);
@@ -155,27 +119,32 @@ function loadFeaturePanels(): Record<string, FeaturePanel> {
       if (Array.isArray(plugin.items)) registerItems(plugin.items);
       else console.error(`[client] ${path}: items must be an array - skipping`);
     }
-    if (plugin.panels && typeof plugin.panels === 'object') {
-      for (const [id, panel] of Object.entries(plugin.panels)) {
-        if (typeof panel !== 'function') {
-          console.error(`[client] ${path}: panel '${id}' is not a component - skipping`);
-          continue;
-        }
-        panels[id] = panel as FeaturePanel;
+    for (const [id, panel] of Object.entries(plugin.panels ?? {})) {
+      if (typeof panel !== 'function') {
+        console.error(`[client] ${path}: panel '${id}' is not a component - skipping`);
+        continue;
       }
+      loaded.devPanels[id] = panel as FeaturePanel;
     }
-    if (plugin.sprites && typeof plugin.sprites === 'object') {
-      for (const [kind, glyph] of Object.entries(plugin.sprites)) {
-        registerEmoji(kind, glyph);
+    for (const [kind, glyph] of Object.entries(plugin.sprites ?? {})) registerEmoji(kind, glyph);
+    if (plugin.interactions) registerInteractions(plugin.interactions);
+    for (const [id, win] of Object.entries(plugin.windows ?? {})) {
+      if (typeof win?.component !== 'function') {
+        console.error(`[client] ${path}: window '${id}' has no component - skipping`);
+        continue;
       }
+      loaded.windows[id] = win;
+    }
+    for (const [id, widget] of Object.entries(plugin.hud ?? {})) {
+      if (typeof widget === 'function') loaded.hud[id] = widget as FeatureComponent;
     }
   }
-  return panels;
+  return loaded;
 }
 
 async function main(): Promise<void> {
-  // Feature panels discovered via import.meta.glob; loaded before React mounts.
-  const featurePanels = loadFeaturePanels();
+  // Feature UI discovered via import.meta.glob; loaded before React mounts.
+  const features = loadFeatures();
 
   let socket: WebSocket | null = null;
   let game: Game = null!;
@@ -221,13 +190,6 @@ async function main(): Promise<void> {
       socket.send(JSON.stringify(intent));
     }
   }
-
-  // Clicking an entity attacks it. 'combat:attack' is a FEATURE command, not
-  // a core intent — with the combat feature uninstalled the server simply
-  // rejects the kind. Damage and adjacency are validated server-side there.
-  game.setAttackHandler((entityId) => {
-    sendIntent({ t: 'intent', kind: 'combat:attack', targetId: entityId });
-  });
 
   function connect(): void {
     const ws = new WebSocket(WS_URL);
@@ -325,48 +287,21 @@ async function main(): Promise<void> {
     }, PING_INTERVAL_MS);
   }
 
-  // React overlay mounted above the canvas.
+  // Input and HUD. Clicking a creature attacks it through 'combat:attack', a
+  // FEATURE command: with combat uninstalled the server rejects the kind.
+  let hud: HudRuntime | null = null;
+  const controls = new Controls(game, sendIntent, (text) => hud?.notify(text, 'bad'));
+  hud = new HudRuntime(game, controls, sendIntent);
+  registerCoreWindows(hud);
+  for (const [id, win] of Object.entries(features.windows)) hud.windows.set(id, { ...win, id });
   const overlay = document.getElementById('ui-overlay');
   if (overlay) {
     createRoot(overlay).render(
-      <App game={game} featurePanels={featurePanels} sendIntent={sendIntent} />,
+      <App rt={hud} devPanels={features.devPanels} hudWidgets={features.hud} />,
     );
   }
-
-  // Keyboard input. Events that bubble up from the UI overlay are ignored so
-  // panels can own their own keys; arrow keys / WASD move, 'I' toggles the
-  // inventory panel.
-  window.addEventListener('keydown', (event) => {
-    if (originatesInOverlay(event.target)) return;
-    if (event.key === 'i' || event.key === 'I') {
-      window.dispatchEvent(new Event(INVENTORY_TOGGLE_EVENT));
-      return;
-    }
-    // Free-look first: these never reach the movement handler.
-    const pan = PAN_KEYS[event.key];
-    if (pan) {
-      event.preventDefault();
-      game.panCamera(pan.x * PAN_STEP, pan.y * PAN_STEP);
-      return;
-    }
-    if (event.key === 'o' || event.key === 'O') {
-      event.preventDefault();
-      game.recentreCamera();
-      return;
-    }
-
-    const step = ARROW_TO_DIR[event.key];
-    if (step) {
-      event.preventDefault();
-      sendIntent({ t: 'intent', kind: 'move', dir: step });
-      return;
-    }
-    const stride = WASD_TO_DIR[event.key];
-    if (stride) {
-      event.preventDefault();
-      sendIntent({ t: 'intent', kind: 'move', dir: stride, dist: STRIDE });
-    }
-  });
+  hud.notify('Welcome to the realm. Click to walk, click creatures to fight.', 'info');
+  if (import.meta.env?.DEV) Object.assign(window, { __game: game, __hud: hud });
 
   startPing();
   startViewReports();

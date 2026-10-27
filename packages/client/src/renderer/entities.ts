@@ -1,4 +1,4 @@
-import { Container, Graphics, Rectangle, Sprite, Text } from 'pixi.js';
+import { Container, Graphics, Rectangle, Sprite, Text, type FederatedPointerEvent } from 'pixi.js';
 import type { CraftingComponent, EntityState, ItemDropComponent } from '@game/shared';
 import { isStatsComponent } from '@game/shared';
 import { emojiForItem, emojiForKind, emojiTexture } from '../emoji-atlas.ts';
@@ -16,6 +16,17 @@ const ITEM_EMOJI_SIZE = 15; // ground items render smaller: they are things, not
 /** How long a despawned entity stays frozen on screen before vanishing. */
 const FROZEN_MS = 3000;
 
+/** A first step after standing still takes this long to cross one tile. */
+const DEFAULT_STEP_MS = 200;
+const MIN_STEP_MS = 90;
+const MAX_STEP_MS = 520;
+/** Jumps further than this (strides, doors, respawns) snap instead of sliding. */
+const SNAP_TILES = 2.5;
+
+const FLOAT_MS = 1100;
+
+export type EntityPointer = 'tap' | 'over' | 'out';
+
 interface RenderEntity {
   id: number;
   kind: string;
@@ -31,13 +42,35 @@ interface RenderEntity {
   craftBar: Graphics;
   /** Phase 7: health bar above damaged entities; invisible at full hp. */
   hpBar: Graphics;
+  /** Hover / target ring under the feet. */
+  ring: Graphics;
   /** When the entity left the newest snapshot, or null while it is live. */
   frozenAt: number | null;
   art: ArtState;
   textured: boolean;
   lastUpdate: number;
-  lastMoved: number;
   marker: number | undefined;
+  /** Authoritative tile the sprite is heading for. */
+  tileX: number;
+  tileY: number;
+  /** Tween from the visual position at the moment the tile changed. */
+  fromX: number;
+  fromY: number;
+  tweenStart: number;
+  tweenMs: number;
+  lastTileChange: number;
+  /** Visual position in tiles. */
+  visX: number;
+  visY: number;
+  lastHp: number | null;
+  lastLevel: number | null;
+  actor: boolean;
+}
+
+interface FloatingText {
+  text: Text;
+  born: number;
+  vx: number;
 }
 
 function isItemDrop(value: unknown): value is ItemDropComponent {
@@ -66,30 +99,32 @@ function colorToInt(hex: string): number {
   return parseInt(hex.slice(1), 16);
 }
 
+const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
+const absN = (v: number): number => (v < 0 ? -v : v);
+
 /**
  * Renders entities from the newest snapshot: one container per entity
- * holding its colored rect and emoji glyph, health and craft bars, and the
- * click-to-attack hit area. The server remains the sole source of truth —
- * this is visual smoothing only, with no prediction or rollback.
- *
- * Entity rendering (Phase 5):
- * - ground items (kind 'item') render as a small emoji with a count label;
- * - containers render with the chest glyph and a brown backing rect;
- * - everything else keeps the colored rect + glyph treatment.
+ * holding its sprite, rings, health and craft bars and pointer hit area. The
+ * server remains the sole source of truth — positions here are visual only:
+ * each time an entity's authoritative tile changes, its sprite slides there
+ * over roughly the interval between its recent steps, so a walker stepping
+ * once per server tick pair reads as continuous motion.
  */
 export class EntityRenderer {
   private readonly entities = new Map<number, RenderEntity>();
-  /** Phase 7: click-to-attack callback (set via setAttackHandler); null = disabled. */
-  private attackHandler: ((entityId: number) => void) | null = null;
-  /** The entity id that belongs to this browser tab; drives the white outline. */
+  private pointerHandler: ((id: number, type: EntityPointer, e: FederatedPointerEvent) => void) | null =
+    null;
+  /** The entity id that belongs to this browser tab; drives the local ring. */
   private localEntityId: number | null = null;
+  private hoveredId: number | null = null;
+  private targetId: number | null = null;
   private readonly layer: Container;
+  private readonly floats: FloatingText[] = [];
 
   constructor(layer: Container) {
     this.layer = layer;
   }
 
-  /** Paint an entity's colored rect, with a white outline for the local player. */
   private paintRect(render: RenderEntity, isLocal: boolean): void {
     if (!render.rect) return; // ground items have no rect
     render.rect.clear();
@@ -100,9 +135,10 @@ export class EntityRenderer {
           .fill(0x202c34)
           .stroke({ width: 3, color: render.marker });
         render.rect.ellipse(16, 24, 13, 6).stroke({ width: 1, color: render.marker });
+      } else if (render.actor) {
+        render.rect.ellipse(16, 28, 10, 4).fill({ color: 0x000000, alpha: 0.22 });
       }
-      // A small ring keeps the local player identifiable without covering art.
-      if (isLocal) render.rect.ellipse(16, 27, 12, 5).stroke({ width: 1.5, color: 0xffefb0 });
+      if (isLocal) render.rect.ellipse(16, 28, 12, 5).stroke({ width: 1.5, color: 0xffefb0 });
       return;
     }
     const size = TILE_SIZE - RECT_PAD * 2;
@@ -112,14 +148,40 @@ export class EntityRenderer {
     }
   }
 
-  /**
-   * One container per entity holding its rect and emoji together, so the
-   * whole sprite keeps a single z-order: a player standing on an occupied
-   * tile covers the entity underneath, like the old 2D canvas renderer.
-   */
+  private paintRing(render: RenderEntity): void {
+    const ring = render.ring;
+    ring.clear();
+    const targeted = render.id === this.targetId;
+    const hovered = render.id === this.hoveredId;
+    if (!targeted && !hovered) {
+      ring.visible = false;
+      return;
+    }
+    ring.visible = true;
+    const color = targeted ? 0xff6b5a : 0xfff1c1;
+    ring.ellipse(16, 28, 15, 6).stroke({ width: 2, color, alpha: targeted ? 0.95 : 0.7 });
+  }
+
+  /** Hit area spans the painted sprite as well as the tile, so tall art is clickable. */
+  private fitHitArea(render: RenderEntity): void {
+    const sprite = render.emoji;
+    const w = sprite.texture.width * absN(sprite.scale.x);
+    const h = sprite.texture.height * absN(sprite.scale.y);
+    const left = sprite.scale.x < 0 ? sprite.x - w : sprite.x - sprite.anchor.x * w;
+    const top = sprite.y - sprite.anchor.y * h;
+    const x0 = left < 0 ? left : 0;
+    const y0 = top < -8 ? top : -8;
+    const x1 = left + w > TILE_SIZE ? left + w : TILE_SIZE;
+    const y1 = top + h > TILE_SIZE ? top + h : TILE_SIZE;
+    render.container.hitArea = new Rectangle(x0, y0, x1 - x0, y1 - y0);
+  }
+
   private createRenderEntity(entity: EntityState): RenderEntity {
     const container = new Container();
     const isGroundItem = entity.kind === 'item' && isItemDrop(entity.components.itemDrop);
+    const ring = new Graphics();
+    ring.visible = false;
+    container.addChild(ring);
 
     let rect: Graphics | null = null;
     let countLabel: Text | null = null;
@@ -134,8 +196,6 @@ export class EntityRenderer {
       emoji.position.set(TILE_SIZE / 2, TILE_SIZE / 2);
       container.addChild(emoji);
 
-      // Always create the label so later count changes (a partial pickup or
-      // a merge from another drop) can update it; hidden while count <= 1.
       countLabel = new Text({
         text: drop.count > 1 ? String(drop.count) : '',
         style: {
@@ -143,6 +203,7 @@ export class EntityRenderer {
           fill: 0xffffff,
           fontFamily: 'ui-monospace, monospace',
           fontWeight: 'bold',
+          stroke: { color: 0x000000, width: 2 },
         },
       });
       countLabel.anchor.set(0.5, 1);
@@ -158,30 +219,22 @@ export class EntityRenderer {
       container.addChild(rect, emoji);
     }
 
-    // Phase 6: one graphics layer for craft progress bars, drawn above the
-    // rect and glyph; invisible until the entity has active crafting jobs.
     const craftBar = new Graphics();
     craftBar.visible = false;
     container.addChild(craftBar);
 
-    // Phase 7: one graphics layer for the health bar, drawn just above the
-    // tile; invisible until the entity has stats with missing hp.
     const hpBar = new Graphics();
     hpBar.visible = false;
     container.addChild(hpBar);
 
-    // Phase 7: click an entity to attack it. Only the local player's own
-    // entity is excluded; the server validates stats and adjacency, so a
-    // click on a non-combat entity is a harmless no-op.
     container.eventMode = 'static';
-    container.hitArea = new Rectangle(0, -16, TILE_SIZE, TILE_SIZE + 16);
     container.cursor = 'pointer';
-    container.on('pointertap', () => {
-      if (this.attackHandler && entity.id !== this.localEntityId) {
-        this.attackHandler(entity.id);
-      }
-    });
+    container.on('pointertap', (e: FederatedPointerEvent) => this.pointerHandler?.(entity.id, 'tap', e));
+    container.on('pointerover', (e: FederatedPointerEvent) => this.pointerHandler?.(entity.id, 'over', e));
+    container.on('pointerout', (e: FederatedPointerEvent) => this.pointerHandler?.(entity.id, 'out', e));
 
+    const now = performance.now();
+    const stats = entity.components.stats;
     const render: RenderEntity = {
       id: entity.id,
       kind: entity.kind,
@@ -192,14 +245,29 @@ export class EntityRenderer {
       countLabel,
       craftBar,
       hpBar,
+      ring,
       frozenAt: null,
       art: { facing: 'south', walkTime: 0, moving: false },
       textured: false,
-      lastUpdate: performance.now(),
-      lastMoved: -1000,
+      lastUpdate: now,
       marker: entityAppearance(entity)?.marker,
+      tileX: entity.x,
+      tileY: entity.y,
+      fromX: entity.x,
+      fromY: entity.y,
+      tweenStart: 0,
+      tweenMs: 0,
+      lastTileChange: -10000,
+      visX: entity.x,
+      visY: entity.y,
+      lastHp: isStatsComponent(stats) ? stats.hp : null,
+      lastLevel: isStatsComponent(stats) ? stats.level : null,
+      actor:
+        entity.kind === 'player' ||
+        entity.kind === 'npc' ||
+        Boolean(entityAppearance(entity)?.creature ?? entityAppearance(entity)?.character),
     };
-    render.textured = paintEntityArt(emoji, entity, render.art, performance.now());
+    render.textured = paintEntityArt(emoji, entity, render.art, now);
     const label = entity.components.label;
     if (typeof label === 'string' && label.length > 0) {
       const name = new Text({
@@ -217,28 +285,20 @@ export class EntityRenderer {
       container.addChild(name);
     }
     this.paintRect(render, entity.id === this.localEntityId);
+    this.fitHitArea(render);
     container.position.set(entity.x * TILE_SIZE, entity.y * TILE_SIZE);
     this.layer.addChild(container);
     return render;
   }
 
-  /**
-   * Drop every sprite immediately, without the usual freeze-then-fade.
-   *
-   * Entities that vanish from a snapshot normally linger for FROZEN_MS so a
-   * brief gap does not make things blink. Changing world is not a gap: the
-   * previous world's contents are gone, and leaving them on screen draws the
-   * old map's crowd standing in the new one.
-   */
+  /** Drop every sprite immediately (world change), without the freeze-then-fade. */
   clear(): void {
     for (const render of this.entities.values()) render.container.destroy({ children: true });
     this.entities.clear();
+    for (const f of this.floats) f.text.destroy();
+    this.floats.length = 0;
   }
 
-  /**
-   * Mark the entity id that belongs to this browser tab, repainting the
-   * highlight: the old local player loses it, the new one gains it.
-   */
   setLocalEntity(id: number | null): void {
     this.localEntityId = id;
     for (const render of this.entities.values()) {
@@ -246,12 +306,31 @@ export class EntityRenderer {
     }
   }
 
-  /** Phase 7: wire up click-to-attack. Pass null to disable. */
-  setAttackHandler(handler: ((entityId: number) => void) | null): void {
-    this.attackHandler = handler;
+  setPointerHandler(
+    handler: ((id: number, type: EntityPointer, e: FederatedPointerEvent) => void) | null,
+  ): void {
+    this.pointerHandler = handler;
   }
 
-  /** The tile centre (world px) of a rendered entity, or null if it is not rendered. */
+  setHovered(id: number | null): void {
+    const prev = this.hoveredId;
+    this.hoveredId = id;
+    for (const rid of [prev, id]) {
+      const r = rid === null ? undefined : this.entities.get(rid);
+      if (r) this.paintRing(r);
+    }
+  }
+
+  setTarget(id: number | null): void {
+    const prev = this.targetId;
+    this.targetId = id;
+    for (const rid of [prev, id]) {
+      const r = rid === null ? undefined : this.entities.get(rid);
+      if (r) this.paintRing(r);
+    }
+  }
+
+  /** The visual tile centre (world px) of a rendered entity, or null if it is not rendered. */
   tileCenter(id: number | null): { x: number; y: number } | null {
     if (id === null) return null;
     const render = this.entities.get(id);
@@ -262,48 +341,118 @@ export class EntityRenderer {
     };
   }
 
+  /** Visual tile position, for the minimap and overlays. */
+  visualTile(id: number): { x: number; y: number } | null {
+    const render = this.entities.get(id);
+    return render ? { x: render.visX, y: render.visY } : null;
+  }
+
+  /** Spawn a rising, fading label above a tile (world tile coords). */
+  floatText(x: number, y: number, text: string, color: number, size = 14): void {
+    const label = new Text({
+      text,
+      style: {
+        fontFamily: 'Georgia, "Times New Roman", serif',
+        fontSize: size,
+        fontWeight: 'bold',
+        fill: color,
+        stroke: { color: 0x120d08, width: 4 },
+      },
+    });
+    label.anchor.set(0.5, 1);
+    label.position.set(x * TILE_SIZE + TILE_SIZE / 2, y * TILE_SIZE - 10);
+    label.zIndex = 1e9;
+    this.layer.addChild(label);
+    const jitter = ((this.floats.length * 37) % 11) - 5;
+    this.floats.push({ text: label, born: performance.now(), vx: jitter * 2 });
+  }
+
+  private animateFloats(now: number, dtMs: number): void {
+    for (let i = this.floats.length - 1; i >= 0; i--) {
+      const f = this.floats[i];
+      const age = now - f.born;
+      if (age > FLOAT_MS) {
+        f.text.destroy();
+        this.floats.splice(i, 1);
+        continue;
+      }
+      const t = age / FLOAT_MS;
+      f.text.y -= (dtMs / 1000) * 34;
+      f.text.x += (dtMs / 1000) * f.vx;
+      f.text.alpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
+      const pop = t < 0.12 ? 0.7 + (t / 0.12) * 0.5 : t < 0.22 ? 1.2 - ((t - 0.12) / 0.1) * 0.2 : 1;
+      f.text.scale.set(pop);
+    }
+  }
+
   /**
-   * Move existing render entities to their lerped spot, spawn fresh ones
-   * from the newest snapshot, and clean up long-frozen ghosts. `positions`
-   * holds the desired world tile for every entity in either snapshot;
-   * `byId` resolves fresh spawns. Textures default to NOT being destroyed,
-   * which is what we want: the atlas textures are shared by every entity.
+   * Advance every sprite toward its authoritative tile, spawn fresh ones from
+   * the newest snapshot, and clean up long-frozen ghosts. `targets` holds the
+   * authoritative tile of every live entity.
    */
   updatePositions(
-    positions: Map<number, { x: number; y: number }>,
+    targets: Map<number, { x: number; y: number }>,
     byId: Map<number, EntityState>,
     now: number,
+    dtMs: number,
   ): void {
-    // Existing render entities: move to their lerped spot, or start freezing
-    // when they vanished from the newest snapshot.
     for (const render of this.entities.values()) {
-      const target = positions.get(render.id);
-      if (target) {
-        const dx = target.x * TILE_SIZE - render.container.x;
-        const dy = target.y * TILE_SIZE - render.container.y;
-        const moving = dx > 0.01 || dx < -0.01 || dy > 0.01 || dy < -0.01;
-        const elapsed = now - render.lastUpdate;
-        if (moving) render.lastMoved = now;
-        render.art.moving = moving || now - render.lastMoved < 100;
-        if (moving) {
-          if (dx > 0.01 || dx < -0.01) render.art.facing = dx > 0 ? 'east' : 'west';
+      const target = targets.get(render.id);
+      if (!target) {
+        if (render.frozenAt === null) render.frozenAt = now;
+        render.art.moving = false;
+        continue;
+      }
+      render.frozenAt = null;
+
+      if (target.x !== render.tileX || target.y !== render.tileY) {
+        const dx = target.x - render.tileX;
+        const dy = target.y - render.tileY;
+        const far = absN(target.x - render.visX) + absN(target.y - render.visY) > SNAP_TILES;
+        if (far) {
+          render.visX = render.fromX = target.x;
+          render.visY = render.fromY = target.y;
+          render.tweenMs = 0;
+        } else {
+          const since = now - render.lastTileChange;
+          render.fromX = render.visX;
+          render.fromY = render.visY;
+          render.tweenStart = now;
+          render.tweenMs = since > MAX_STEP_MS + 150 ? DEFAULT_STEP_MS : clamp(since, MIN_STEP_MS, MAX_STEP_MS);
+          if (absN(dx) >= absN(dy)) render.art.facing = dx > 0 ? 'east' : 'west';
           else render.art.facing = dy > 0 ? 'south' : 'north';
         }
-        if (render.art.moving) render.art.walkTime += elapsed < 100 ? elapsed : 100;
-        else render.art.walkTime = 0;
-        const entity = byId.get(render.id);
-        if (entity) paintEntityArt(render.emoji, entity, render.art, now);
-        render.lastUpdate = now;
-        render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
-        render.container.zIndex = target.y * TILE_SIZE + (render.kind === 'item' ? -1 : 0);
-        render.frozenAt = null;
-      } else if (render.frozenAt === null) {
-        render.frozenAt = now; // despawned (or disconnected): freeze in place
+        render.tileX = target.x;
+        render.tileY = target.y;
+        render.lastTileChange = now;
       }
+
+      let moving = false;
+      if (render.tweenMs > 0) {
+        const t = (now - render.tweenStart) / render.tweenMs;
+        if (t >= 1) {
+          render.visX = render.tileX;
+          render.visY = render.tileY;
+        } else {
+          render.visX = render.fromX + (render.tileX - render.fromX) * t;
+          render.visY = render.fromY + (render.tileY - render.fromY) * t;
+          moving = true;
+        }
+      }
+      // Hold the walk cycle across the seam between consecutive steps.
+      const walking = moving || now - (render.tweenStart + render.tweenMs) < 90;
+      const elapsed = now - render.lastUpdate;
+      render.art.moving = walking;
+      if (walking) render.art.walkTime += elapsed < 100 ? elapsed : 100;
+      else render.art.walkTime = 0;
+      const entity = byId.get(render.id);
+      if (entity) paintEntityArt(render.emoji, entity, render.art, now);
+      render.lastUpdate = now;
+      render.container.position.set(render.visX * TILE_SIZE, render.visY * TILE_SIZE);
+      render.container.zIndex = render.visY * TILE_SIZE + (render.kind === 'item' ? -1 : 0);
     }
 
-    // Fresh entities from the newest snapshot.
-    for (const [id, target] of positions) {
+    for (const [id, target] of targets) {
       if (!this.entities.has(id)) {
         const entity = byId.get(id);
         if (!entity) continue;
@@ -311,24 +460,25 @@ export class EntityRenderer {
         render.container.position.set(target.x * TILE_SIZE, target.y * TILE_SIZE);
         render.container.zIndex = target.y * TILE_SIZE;
         this.entities.set(id, render);
+        this.paintRing(render);
       }
     }
 
-    // Clean up long-frozen ghosts.
     for (const [id, render] of this.entities) {
       if (render.frozenAt !== null && now - render.frozenAt > FROZEN_MS) {
         render.container.destroy({ children: true });
         this.entities.delete(id);
+      } else if (render.frozenAt !== null) {
+        render.container.alpha = 1 - (now - render.frozenAt) / FROZEN_MS;
+      } else if (render.container.alpha !== 1) {
+        render.container.alpha = 1;
       }
     }
+
+    this.animateFloats(now, dtMs);
   }
 
-  /**
-   * Phase 6: redraw the progress bar above every station with active crafting
-   * jobs — one bar per job, stacked from the top of the tile, green when the
-   * local player owns the job, blue otherwise. Read fresh from the newest
-   * snapshot every frame, so progress ticks are visible in both clients.
-   */
+  /** Stations with active crafting jobs get stacked progress bars. */
   updateCraftBars(snapshot: { entities: EntityState[] }): void {
     for (const entity of snapshot.entities) {
       const render = this.entities.get(entity.id);
@@ -343,8 +493,7 @@ export class EntityRenderer {
       crafting.activeJobs.forEach((job, index) => {
         const y = 2 + index * 5;
         const width = TILE_SIZE - 4;
-        render.craftBar.rect(2, y, width, 3).fill(0x161616); // track
-        // No Math.* (banned by lint): manual clamp + ~~(x + 0.5) rounding.
+        render.craftBar.rect(2, y, width, 3).fill(0x161616);
         const raw = job.progress / job.totalTicks;
         const frac = raw < 0 ? 0 : raw > 1 ? 1 : raw;
         const fillWidth = frac <= 0 ? 0 : ~~(width * frac + 0.5) < 2 ? 2 : ~~(width * frac + 0.5);
@@ -356,39 +505,52 @@ export class EntityRenderer {
   }
 
   /**
-   * Phase 7: redraw the health bar just above every damaged entity — green
-   * above 50%, yellow above 25%, red at or below; hidden while at full hp
-   * or without a stats component. Read fresh from the newest snapshot every
-   * frame, like the craft bars.
+   * Health bars over damaged or targeted entities, and floating numbers for
+   * every hp or level change seen between snapshots.
    */
   updateHealthBars(snapshot: { entities: EntityState[] }): void {
     for (const entity of snapshot.entities) {
       const render = this.entities.get(entity.id);
       if (!render) continue;
       const stats = entity.components.stats;
-      if (!isStatsComponent(stats) || stats.hp >= stats.maxHp) {
+      if (!isStatsComponent(stats)) {
+        render.hpBar.visible = false;
+        continue;
+      }
+      if (render.lastHp !== null && stats.hp !== render.lastHp) {
+        const delta = stats.hp - render.lastHp;
+        const mine = entity.id === this.localEntityId;
+        if (delta < 0) {
+          this.floatText(render.visX, render.visY, String(-delta), mine ? 0xff5a4e : 0xffe9a8, mine ? 15 : 16);
+        } else if (delta >= 2 && stats.hp < stats.maxHp + 1) {
+          this.floatText(render.visX, render.visY, `+${delta}`, 0x7ee787, 13);
+        }
+      }
+      if (render.lastLevel !== null && stats.level > render.lastLevel) {
+        this.floatText(render.visX, render.visY - 0.6, `LEVEL ${stats.level}!`, 0xffd25e, 18);
+      }
+      render.lastHp = stats.hp;
+      render.lastLevel = stats.level;
+
+      const show = stats.hp < stats.maxHp || entity.id === this.targetId;
+      if (!show || entity.kind === 'player' && entity.id === this.localEntityId) {
         render.hpBar.visible = false;
         continue;
       }
       render.hpBar.visible = true;
       render.hpBar.clear();
-      const width = TILE_SIZE - 4;
-      const y = -4; // just above the tile, so the bar reads as 'over' the entity
-      render.hpBar.rect(2, y, width, 3).fill(0x161616); // track
-      // No Math.* (banned by lint): manual clamp + ~~(x + 0.5) rounding.
+      const width = TILE_SIZE - 2;
+      const top = render.emoji.y - render.emoji.anchor.y * render.emoji.height;
+      const y = (top < 0 ? top : 0) - 6;
+      render.hpBar.roundRect(0, y, width + 2, 5, 2).fill({ color: 0x0d0a07, alpha: 0.85 });
       const raw = stats.hp / stats.maxHp;
       const frac = raw < 0 ? 0 : raw > 1 ? 1 : raw;
       const fillWidth = frac <= 0 ? 0 : ~~(width * frac + 0.5) < 2 ? 2 : ~~(width * frac + 0.5);
-      const color = frac > 0.5 ? 0x7ee787 : frac > 0.25 ? 0xe5c07b : 0xe06c75;
-      render.hpBar.rect(2, y, fillWidth, 3).fill(color);
+      const color = frac > 0.5 ? 0x6fd36a : frac > 0.25 ? 0xe5c07b : 0xe06c75;
+      render.hpBar.rect(1, y + 1, fillWidth, 3).fill(color);
     }
   }
 
-  /**
-   * Ground-item stack counts change when someone picks up part of a stack
-   * or a drop merges into another; refresh the count labels directly from
-   * the newest state.
-   */
   refreshCountLabels(entities: EntityState[]): void {
     for (const entity of entities) {
       if (entity.kind !== 'item') continue;

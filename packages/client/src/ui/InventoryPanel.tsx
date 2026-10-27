@@ -1,15 +1,10 @@
-import { useEffect, useState } from 'react';
-import type { Intent, InventoryComponent } from '@game/shared';
-import type { Game } from '../game.ts';
-import { emojiForItem } from '../emoji-atlas.ts';
+import { useState } from 'react';
+import type { InventoryComponent } from '@game/shared';
 import { getItemDef } from '../items.ts';
+import { ItemIcon } from './ItemIcon.tsx';
+import { useItem } from './Hud.tsx';
+import { useSnapshots, type HudRuntime } from './runtime.ts';
 
-const POLL_MS = 200;
-
-/** Window event toggling the panel; the 'I' key in index.tsx dispatches it. */
-export const INVENTORY_TOGGLE_EVENT = 'tnmt:inventory-toggle';
-
-/** Runtime shape check — snapshot component blobs are plain JSON. */
 function isInventory(value: unknown): value is InventoryComponent {
   if (typeof value !== 'object' || value === null) return false;
   const inv = value as Record<string, unknown>;
@@ -17,135 +12,105 @@ function isInventory(value: unknown): value is InventoryComponent {
 }
 
 /**
- * Phase 5 inventory panel: reads the local player's inventory component from
- * the newest game snapshot (polled, like the debug panel) and lets the
- * player drop items, drag-and-drop slots to swap, and open/close the panel
- * with the 'I' key or the toggle button. All mutations go through intents —
- * the server is authoritative.
+ * The backpack: a slot grid with drag-to-swap, a detail card for the
+ * selected item, and use/drop actions. Every change is an intent; the grid
+ * simply re-reads the inventory component from the next snapshot.
  */
-export function InventoryPanel({
-  game,
-  sendIntent,
-}: {
-  game: Game;
-  sendIntent: (intent: Intent) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [inventory, setInventory] = useState<InventoryComponent | null>(null);
+export function InventoryPanel({ rt }: { rt: HudRuntime }) {
+  useSnapshots(rt);
+  const [selected, setSelected] = useState<number | null>(null);
   const [dragging, setDragging] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const raw = rt.game.localPlayer()?.components.inventory;
+  if (!isInventory(raw)) return <div className="muted">Not connected.</div>;
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      const player = game.localPlayer();
-      const raw = player?.components.inventory;
-      setInventory(
-        isInventory(raw)
-          ? { capacity: raw.capacity, slots: raw.slots.map((slot) => ({ ...slot })) }
-          : null,
-      );
-    }, POLL_MS);
-    return () => window.clearInterval(id);
-  }, [game]);
-
-  useEffect(() => {
-    const onToggle = () => setOpen((value) => !value);
-    window.addEventListener(INVENTORY_TOGGLE_EVENT, onToggle);
-    return () => window.removeEventListener(INVENTORY_TOGGLE_EVENT, onToggle);
-  }, []);
-
-  // When closed, just a small backpack button.
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="inv-toggle-btn"
-        aria-label="open inventory"
-        onClick={(event) => {
-          setOpen(true);
-          event.currentTarget.blur(); // keep the 'I' key working afterwards
-        }}
-      >
-        🎒
-      </button>
-    );
-  }
-
-  const used = inventory ? inventory.slots.filter((slot) => slot.count > 0).length : 0;
+  const used = raw.slots.filter((slot) => slot.count > 0).length;
+  const sel = selected !== null ? raw.slots[selected] : undefined;
+  const selDef = sel && sel.count > 0 ? getItemDef(sel.itemId) : undefined;
 
   return (
-    <div
-      className="inventory-panel"
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <div className="inv-header">
-        <span>Inventory</span>
-        <span className="inv-capacity">{inventory ? `${used}/${inventory.capacity}` : '–'}</span>
-        <button
-          type="button"
-          className="inv-close"
-          aria-label="close inventory"
-          onClick={(event) => {
-            setOpen(false);
-            event.currentTarget.blur();
-          }}
-        >
-          ✕
-        </button>
+    <>
+      <div className="section-title">
+        Pack · {used}/{raw.capacity}
       </div>
-
-      {inventory ? (
-        <div className="inv-slot-grid">
-          {inventory.slots.map((slot, index) => {
-            const def = slot.count > 0 ? getItemDef(slot.itemId) : undefined;
-            return (
-              <div
-                key={index}
-                className={
-                  `inv-slot${slot.count > 0 ? '' : ' inv-slot-empty'}` +
-                  (dragging === index ? ' inv-slot-dragging' : '')
+      <div className="inv-grid">
+        {raw.slots.map((slot, index) => {
+          const filled = slot.count > 0;
+          const def = filled ? getItemDef(slot.itemId) : undefined;
+          return (
+            <div
+              key={index}
+              className={
+                'inv-cell' +
+                (filled ? ' filled' : '') +
+                (selected === index && filled ? ' selected' : '') +
+                (dragging === index ? ' dragging' : '') +
+                (over === index && dragging !== null && dragging !== index ? ' over' : '')
+              }
+              title={def?.name ?? (filled ? slot.itemId : '')}
+              draggable={filled}
+              onClick={() => setSelected(filled ? index : null)}
+              onDoubleClick={() => filled && useItem(rt, slot.itemId, index)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (filled) useItem(rt, slot.itemId, index);
+              }}
+              onDragStart={() => setDragging(index)}
+              onDragEnd={() => {
+                setDragging(null);
+                setOver(null);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOver(index);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragging !== null && dragging !== index) {
+                  rt.sendIntent({ t: 'intent', kind: 'swap', a: dragging, b: index });
+                  if (selected === dragging) setSelected(index);
                 }
-                draggable={slot.count > 0}
-                onDragStart={() => setDragging(index)}
-                onDragEnd={() => setDragging(null)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  if (dragging !== null && dragging !== index) {
-                    sendIntent({ t: 'intent', kind: 'swap', a: dragging, b: index });
-                  }
-                  setDragging(null);
-                }}
+                setDragging(null);
+                setOver(null);
+              }}
+            >
+              {filled && <ItemIcon itemId={slot.itemId} size={24} />}
+              {filled && slot.count > 1 && <span className="count">{slot.count}</span>}
+            </div>
+          );
+        })}
+      </div>
+      <div className="item-card">
+        {sel && sel.count > 0 ? (
+          <>
+            <div className="title">
+              {selDef?.name ?? sel.itemId}
+              {sel.count > 1 ? ` ×${sel.count}` : ''}
+            </div>
+            <div className="tags">{(selDef?.tags ?? []).join(' · ')}</div>
+            {selDef?.description && <div className="desc">{selDef.description}</div>}
+            {selDef?.value !== undefined && <div className="desc">Worth {selDef.value} gold</div>}
+            <div className="actions">
+              {selDef?.use && (
+                <button type="button" className="btn small" onClick={() => useItem(rt, sel.itemId, selected!)}>
+                  {selDef.useLabel ?? 'Use'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn small danger"
+                onClick={() => rt.sendIntent({ t: 'intent', kind: 'drop', slot: selected! })}
               >
-                {slot.count > 0 && (
-                  <>
-                    <span className="inv-emoji">{emojiForItem(slot.itemId, def?.tags)}</span>
-                    <span className="inv-name" title={slot.itemId}>
-                      {def?.name ?? slot.itemId}
-                    </span>
-                    <span className="inv-count">×{slot.count}</span>
-                    <button
-                      type="button"
-                      className="inv-drop-btn"
-                      title={`drop ${def?.name ?? slot.itemId} on the ground`}
-                      onClick={(event) => {
-                        sendIntent({ t: 'intent', kind: 'drop', slot: index });
-                        event.currentTarget.blur();
-                      }}
-                    >
-                      drop
-                    </button>
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="inv-empty">no inventory — connect to the server</div>
-      )}
-
-      <div className="inv-hint">I: toggle · drag a slot onto another to swap</div>
-    </div>
+                Drop
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="muted">
+            Select an item to inspect it. Double-click or right-click to use; drag to rearrange.
+          </div>
+        )}
+      </div>
+    </>
   );
 }

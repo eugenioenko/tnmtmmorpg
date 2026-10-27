@@ -18,7 +18,7 @@ pnpm world:reset     # generate a fresh 10000x10000 world (seed 42)
 pnpm dev             # server on :3010, client on :5173
 ```
 
-Open <http://localhost:5173>. Arrow keys move one tile; **WASD strides 100 tiles** for exploring. Click an entity to attack it. `I` toggles the inventory.
+Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items. Windows: `C` character, `I` inventory, `J` journal, `K` crafting. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
 
 ```bash
 pnpm create-feature my-idea    # scaffold features/my-idea/, runs as-is
@@ -33,8 +33,10 @@ Temporary graphics use a shared Harvest Moon sprite atlas, including animated
 player characters, objects, and terrain. Open `/art.html` on the client dev server
 to browse the extraction. See [the artwork notes](packages/client/src/art/harvest-moon/README.md)
 for organization, rebuilding, and replacement with the final art.
-Players start in a village beside four labeled travel pads. Stand beside a pad
-or building entrance and press **Space** to travel; every destination has a way back.
+Players start in a village beside four labeled travel pads. The elder, the guard
+captain, the alchemist and the trader hand out quests and trade; the wilds outside
+the village get more dangerous the farther you go, and each world beyond the pads
+has its own creatures. Progress is kept per browser across reconnects.
 
 ---
 
@@ -119,10 +121,19 @@ import { defineClient } from '@game/shared';
 
 export default defineClient({
   sprites: { 'mossy-caves:spore': '🍄' },   // entity kind -> emoji, no art pipeline
-  items: [...],                              // names/icons for the inventory panel
-  panels: { 'mossy-caves:panel': MyPanel },  // any React component
+  items: [...],                              // names, icons, descriptions, `use` command
+  interactions: {                            // click it / Space beside it
+    'mossy-caves:altar': { intent: 'mossy-caves:pray', label: 'Pray at' },
+  },
+  windows: {                                 // framed HUD window + action-bar button
+    'mossy-caves:log': { title: 'Spores', icon: '🍄', hotkey: 'KeyP', component: SporeLog },
+  },
+  hud: { 'mossy-caves:meter': SporeMeter },  // always-on widget, right-hand column
+  panels: { 'mossy-caves:dev': DevButtons }, // developer tools, shown in the F3 drawer
 });
 ```
+
+Window and HUD components receive `{ client }` — a read-only view of the newest snapshot (`client.localPlayer()`, `client.subscribe(...)`), `client.sendIntent`, and `client.notify` for the message log. Two components on an entity also mean something to the HUD without any client code: `interact: { intent, label, range? }` makes that one entity usable, and a `dialog: { name, text, options: [{ label, intent }], closeIntent }` component on a player opens a conversation box whose options send their intents (see `features/town`).
 
 ---
 
