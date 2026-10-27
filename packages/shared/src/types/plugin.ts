@@ -227,6 +227,8 @@ export interface Interaction {
   /** Verb shown in prompts and tooltips, e.g. 'Enter', 'Talk'. */
   label: string;
   range?: number;
+  /** False keeps it off Space/E "use the nearest thing"; it then needs a click. */
+  quickUse?: boolean;
 }
 
 /**

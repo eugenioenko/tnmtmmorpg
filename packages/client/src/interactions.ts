@@ -39,6 +39,8 @@ export function entityName(entity: EntityState): string {
   if (typeof label === 'string' && label.length > 0) return label.replace(/ · .*$/, '');
   const name = entity.components.name;
   if (typeof name === 'string' && name.length > 0) return name;
+  const character = entity.components.character as { name?: unknown } | undefined;
+  if (typeof character?.name === 'string') return character.name;
   if (entity.kind === 'player') return `Wanderer ${entity.id}`;
   if (entity.kind === 'npc') return 'Villager';
   const bare = entity.kind.includes(':') ? entity.kind.split(':')[1] : entity.kind;
