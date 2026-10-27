@@ -19,6 +19,7 @@ import {
  *
  *   'character:grant'  { entityId, xp?, gold?, reason? }
  *   'character:charge' { entityId, gold, then(world, ok) }   — spend gold
+ *   'character:heal'   { entityId, amount }                  — restore health
  *
  * Progress survives reconnects: the client keeps a private token and sends
  * 'character:claim' on connect; the record is stored with world.getSet.
@@ -520,6 +521,14 @@ export default definePlugin({
       const gold = typeof p.gold === 'number' && p.gold > 0 ? floor(p.gold) : 0;
       const reason = typeof p.reason === 'string' ? p.reason : undefined;
       grant(world, p.entityId, xp, gold, reason, typeof p.tone === 'string' ? p.tone : 'loot');
+    },
+    'character:heal': (world, payload) => {
+      const p = payload as { entityId?: unknown; amount?: unknown };
+      if (typeof p.entityId !== 'number' || typeof p.amount !== 'number' || p.amount <= 0) return;
+      const r = read(world, p.entityId);
+      if (!r || r.s.hp <= 0) return;
+      const hp = r.s.hp + floor(p.amount);
+      world.update(p.entityId, { stats: { ...r.s, hp: hp > r.s.maxHp ? r.s.maxHp : hp } });
     },
     'character:charge': (world, payload) => {
       const p = payload as { entityId?: unknown; gold?: unknown; then?: unknown };

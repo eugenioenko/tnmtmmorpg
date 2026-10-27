@@ -88,6 +88,8 @@ export interface MonsterComponent {
   /** XP and gold multiplier for monsters scaled up by 'bestiary:spawn'. */
   reward?: number;
   boss?: boolean;
+  /** A player who hit it from outside its aggro range; it turns on them. */
+  provokedBy?: number;
 }
 
 /** Players this close to the world centre are in the village: nothing spawns there. */
@@ -318,6 +320,17 @@ function hunter(world: WorldAPI, entity: EntityState, nearby: EntityState[]): vo
     return;
   }
 
+  if (typeof monster.provokedBy === 'number') {
+    const attacker = world.get(monster.provokedBy);
+    world.update(entity.id, { monster: { ...monster, provokedBy: undefined } });
+    if (attacker && (attacker.world ?? OVERWORLD) === (entity.world ?? OVERWORLD) && cheb(attacker, home) <= LEASH) {
+      npc.state = 'chasing';
+      npc.target = attacker.id;
+      movement.dir = stepToward(world, entity, attacker.x, attacker.y);
+      return;
+    }
+  }
+
   const aggro = species?.aggro ?? 4;
   const prey = nearby.find((e) => {
     if (e.kind !== 'player') return false;
@@ -391,6 +404,15 @@ export default definePlugin({
   commands: [],
 
   events: {
+    'entity:damage': (world, payload) => {
+      const p = payload as { entityId?: unknown; targetId?: unknown; sourceId?: unknown };
+      if (p.entityId !== p.targetId || typeof p.targetId !== 'number' || typeof p.sourceId !== 'number') return;
+      const victim = world.get(p.targetId);
+      const monster = victim?.components.monster;
+      const npc = victim?.components.npc as NPCComponent | undefined;
+      if (!victim || !isMonster(monster) || npc?.state === 'chasing') return;
+      world.update(victim.id, { monster: { ...monster, provokedBy: p.sourceId } });
+    },
     'bestiary:spawn': (world, payload) => {
       const req = payload as SpawnRequest;
       const id = spawnScaled(world, req);

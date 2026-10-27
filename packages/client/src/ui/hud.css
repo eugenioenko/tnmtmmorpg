@@ -30,6 +30,7 @@
 .hud {
   position: absolute;
   inset: 0;
+  isolation: isolate;
   pointer-events: none;
   font: 13px/1.35 var(--font-body);
   color: var(--ink);

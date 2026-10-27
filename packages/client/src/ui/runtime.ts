@@ -59,6 +59,7 @@ export class HudRuntime {
       sendIntent: (intent) => sendIntent(intent as Intent),
       notify: (text, tone, speaker) => this.notify(text, tone ?? 'info', speaker),
       screenOf: (id) => game.screenOf(id),
+      target: () => controls.view.targetId,
       toggleWindow: (id, open) => this.toggle(id, open),
       banner: (text, sub, kind) => this.showBanner(text, kind ?? 'info', sub),
     };
