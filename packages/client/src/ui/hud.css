@@ -299,7 +299,6 @@
   max-height: 180px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   gap: 2px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -307,12 +306,30 @@
   overflow: hidden;
   font-size: 12.5px;
   text-shadow: 0 1px 2px #000, 0 0 2px #000;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gold-lo) transparent;
+}
+
+.log > :first-child {
+  margin-top: auto;
 }
 
 .log-line {
   animation: log-in 220ms ease-out;
   transition: opacity 1.2s;
+  overflow-wrap: anywhere;
 }
+
+.log-line .speaker {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.log-line.chat { color: #f6efe0; }
+.log-line.world { color: #f2a65a; }
+.log-line.world .speaker { color: #ffc685; }
+.log-line.whisper { color: #e58fe8; }
+.log-line.emote { color: #f4d27a; font-style: italic; }
 
 .log-line.old {
   opacity: 0.7;

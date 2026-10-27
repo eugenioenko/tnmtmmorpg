@@ -57,6 +57,8 @@ export interface Registries {
   commands: Map<string, CommandEntry>;
   /** Event listeners by event name; several features may listen to one event. */
   events: Map<string, EventEntry[]>;
+  /** Components sent only to the entity that owns them. */
+  privateComponents: Set<string>;
 }
 
 function emptyRegistries(): Registries {
@@ -67,6 +69,7 @@ function emptyRegistries(): Registries {
     systems: [],
     commands: new Map(),
     events: new Map(),
+    privateComponents: new Set(),
   };
 }
 
@@ -118,6 +121,9 @@ function requirePlugin(mod: unknown, featureName: string): PluginAPI {
   }
   if (typeof plugin.events !== 'object' || plugin.events === null) {
     throw new Error(`[loader] feature '${featureName}': plugin.events must be an object`);
+  }
+  if (plugin.privateComponents !== undefined && !Array.isArray(plugin.privateComponents)) {
+    throw new Error(`[loader] feature '${featureName}': plugin.privateComponents must be an array`);
   }
   return plugin as PluginAPI;
 }
@@ -273,6 +279,14 @@ function register(registries: Registries, feature: string, plugin: PluginAPI): v
     const entry: EventEntry = { feature, event, fn: handler };
     if (list) list.push(entry);
     else registries.events.set(event, [entry]);
+  }
+
+  for (const name of plugin.privateComponents ?? []) {
+    if (typeof name !== 'string') {
+      throw new Error(`[loader] feature '${feature}': every private component must be a string`);
+    }
+    checkNamespacedId(feature, 'private component', name);
+    registries.privateComponents.add(name);
   }
 }
 

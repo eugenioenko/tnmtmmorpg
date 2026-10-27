@@ -193,6 +193,12 @@ export interface PluginAPI {
    * restored from the database are never re-decorated.
    */
   decorateChunk?: (world: WorldAPI, area: ChunkArea, rng: () => number) => void;
+  /**
+   * Component names (namespaced) that only their owner's connection ever
+   * receives. Snapshots strip them from every other entity, so a whisper
+   * inbox or a trade offer never reaches a bystander's client.
+   */
+  privateComponents?: string[];
 }
 
 /**
@@ -228,15 +234,35 @@ export interface Interaction {
  * snapshot, a way to act, and a line in the message log. Components are
  * plain React; they re-render by subscribing to snapshots.
  */
+export type LogTone =
+  | 'info'
+  | 'good'
+  | 'bad'
+  | 'loot'
+  | 'quest'
+  | 'level'
+  | 'chat'
+  | 'world'
+  | 'whisper'
+  | 'emote';
+
 export interface ClientAPI {
   localPlayer(): EntityState | undefined;
   entity(id: number): EntityState | undefined;
+  /** Every entity the client currently knows about. */
+  entities(): Iterable<EntityState>;
   itemDef(id: string): ItemDef | undefined;
   itemIcon(id: string): string;
   /** Called after every snapshot; returns the unsubscribe. */
   subscribe(listener: () => void): () => void;
   sendIntent(intent: { t: 'intent'; kind: string; [key: string]: unknown }): void;
-  notify(text: string, tone?: 'info' | 'good' | 'bad' | 'loot' | 'quest' | 'level'): void;
+  /** A line in the message log; `speaker` is drawn in bold before the text. */
+  notify(text: string, tone?: LogTone, speaker?: string): void;
+  /**
+   * Where an entity is drawn, in HUD overlay pixels: the horizontal centre
+   * and the top of its tile, following the smoothed walk. Null when unknown.
+   */
+  screenOf(id: number): { x: number; y: number } | null;
   /** Open or close one of the HUD windows by id. */
   toggleWindow(id: string, open?: boolean): void;
   /** A large centred announcement that fades by itself. */
@@ -279,8 +305,14 @@ export function defineClient(plugin: {
   interactions?: Record<string, Interaction>;
   /** Player-facing windows, framed by the HUD and listed on the action bar. */
   windows?: Record<string, ClientWindow>;
-  /** Always-on HUD widgets; each receives `{ client }`. */
+  /** Always-on HUD widgets in the right-hand stack; each receives `{ client }`. */
   hud?: Record<string, unknown>;
+  /**
+   * Free-floating HUD layers covering the whole canvas (pointer events off
+   * unless an element turns them on); each receives `{ client }`. For things
+   * placed by the feature itself: speech bubbles, a chat bar.
+   */
+  overlay?: Record<string, unknown>;
 }): unknown {
   return plugin;
 }

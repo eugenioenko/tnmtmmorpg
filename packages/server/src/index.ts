@@ -12,6 +12,7 @@ import {
   World,
 } from './world.ts';
 import { createWorldApi } from './world-api.ts';
+import { setPrivateComponents } from './snapshot.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 import { tickCrafting, type CraftingContext } from './systems/crafting.ts';
 import { Profiler } from './profiler.ts';
@@ -73,6 +74,7 @@ async function main(): Promise<void> {
   // persisted by a feature that is no longer installed simply load as
   // unknown kinds — inert, but never a crash.
   const { features, registries } = await loadFeatures();
+  setPrivateComponents(registries.privateComponents);
   console.log(
     `[server] loaded ${features.length} feature(s): ${features.map((f) => f.name).join(', ')}`,
   );

@@ -96,11 +96,12 @@ interface LoadedFeatures {
   devPanels: Record<string, FeaturePanel>;
   windows: Record<string, ClientWindow>;
   hud: Record<string, FeatureComponent>;
+  overlays: Record<string, FeatureComponent>;
 }
 
 /** Register every loaded feature's items, sprites and interactions; collect its UI. */
 function loadFeatures(): LoadedFeatures {
-  const loaded: LoadedFeatures = { devPanels: {}, windows: {}, hud: {} };
+  const loaded: LoadedFeatures = { devPanels: {}, windows: {}, hud: {}, overlays: {} };
   for (const path of Object.keys(featureModules)) {
     const mod = featureModules[path] as { default?: unknown };
     const plugin = defineClient(mod.default ?? mod) as {
@@ -110,6 +111,7 @@ function loadFeatures(): LoadedFeatures {
       interactions?: Record<string, Interaction>;
       windows?: Record<string, ClientWindow>;
       hud?: Record<string, unknown>;
+      overlay?: Record<string, unknown>;
     };
     if (typeof plugin !== 'object' || plugin === null) {
       console.error(`[client] ${path}: default export is not a defineClient plugin - skipping`);
@@ -137,6 +139,9 @@ function loadFeatures(): LoadedFeatures {
     }
     for (const [id, widget] of Object.entries(plugin.hud ?? {})) {
       if (typeof widget === 'function') loaded.hud[id] = widget as FeatureComponent;
+    }
+    for (const [id, layer] of Object.entries(plugin.overlay ?? {})) {
+      if (typeof layer === 'function') loaded.overlays[id] = layer as FeatureComponent;
     }
   }
   return loaded;
@@ -297,10 +302,15 @@ async function main(): Promise<void> {
   const overlay = document.getElementById('ui-overlay');
   if (overlay) {
     createRoot(overlay).render(
-      <App rt={hud} devPanels={features.devPanels} hudWidgets={features.hud} />,
+      <App
+        rt={hud}
+        devPanels={features.devPanels}
+        hudWidgets={features.hud}
+        overlays={features.overlays}
+      />,
     );
   }
-  hud.notify('Welcome to the realm. Click to walk, click creatures to fight.', 'info');
+  hud.notify('Welcome to the realm. Click to walk, click creatures to fight, Enter to chat.', 'info');
   if (import.meta.env?.DEV) Object.assign(window, { __game: game, __hud: hud });
 
   startPing();

@@ -151,7 +151,31 @@ function entitiesInViewport(world: World, entity: Entity, vp: Viewport): EntityS
   return world
     .entitiesInView(chunk.cx, chunk.cy, VIEW_RADIUS_X, VIEW_RADIUS_Y, entity.world)
     .filter((e) => e.x >= vp.minX && e.x <= vp.maxX && e.y >= vp.minY && e.y <= vp.maxY)
-    .map((e) => ({ id: e.id, kind: e.kind, x: e.x, y: e.y, components: e.components }));
+    .map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      x: e.x,
+      y: e.y,
+      components: e.id === entity.id ? e.components : publicComponents(e.components),
+    }));
+}
+
+let privateComponents: ReadonlySet<string> = new Set();
+
+/** Components that features declared owner-only; set once at boot. */
+export function setPrivateComponents(names: ReadonlySet<string>): void {
+  privateComponents = names;
+}
+
+function publicComponents(components: Record<string, unknown>): Record<string, unknown> {
+  if (privateComponents.size === 0) return components;
+  let out: Record<string, unknown> | null = null;
+  for (const name of privateComponents) {
+    if (!(name in components)) continue;
+    out ??= { ...components };
+    delete out[name];
+  }
+  return out ?? components;
 }
 
 /** Parse a "x,y" tile key back into world coordinates. */

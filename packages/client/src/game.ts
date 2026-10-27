@@ -427,6 +427,14 @@ export class Game {
     return this.renderer.visualTile(id);
   }
 
+  /** Overlay pixel of an entity's tile: horizontal centre, top edge. */
+  screenOf(id: number): { x: number; y: number } | null {
+    const tile = this.renderer.visualTile(id);
+    if (!tile) return null;
+    const p = this.tileToScreen(tile.x, tile.y);
+    return { x: p.x + TILE_SIZE / 2, y: p.y };
+  }
+
   setHovered(id: number | null): void {
     this.renderer.setHovered(id);
   }
