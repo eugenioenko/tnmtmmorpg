@@ -1,0 +1,25 @@
+.grave-tracker.frame {
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.grave-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 13px var(--font-title);
+  color: #c9d1e0;
+}
+
+.grave-count {
+  margin-left: auto;
+  font: 11px var(--font-body);
+  color: var(--ink-faint);
+}
+
+.grave-where { color: var(--gold-hi); font-weight: 600; }
+.grave-time { color: var(--ink-dim); font-size: 11px; }
+.grave-tracker.open .grave-time { color: var(--bad); }
