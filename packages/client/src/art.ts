@@ -2,6 +2,7 @@ import { Assets, ColorMatrixFilter, Rectangle, Texture, type Sprite } from 'pixi
 import { TILE_KIND_BY_BYTE, type EntityState } from '@game/shared';
 import atlas from './art/harvest-moon/atlas.json' with { type: 'json' };
 import atlasUrl from './art/harvest-moon/atlas.png';
+import { emojiTexture } from './emoji-atlas.ts';
 
 // All frames share one GPU source. This is the only skin-specific adapter;
 // replace the atlas and mappings here when the final artwork arrives.
@@ -81,6 +82,8 @@ export interface Appearance {
   /** Grey the art out before tinting, so a yellow dog can become a grey wolf. */
   desaturate?: boolean;
   marker?: number;
+  /** Draw this emoji, standing on the tile, instead of atlas art; `scale` sizes it. */
+  emoji?: string;
 }
 
 const tintFilters = new Map<number, ColorMatrixFilter>();
@@ -110,6 +113,7 @@ export function entityAppearance(entity: EntityState): Appearance | undefined {
   if (typeof appearance !== 'object' || appearance === null) return undefined;
   const spec = appearance as Appearance;
   return typeof spec.frame === 'string' ||
+    typeof spec.emoji === 'string' ||
     typeof spec.creature === 'string' ||
     typeof spec.character === 'string'
     ? spec
@@ -201,6 +205,16 @@ export function paintEntityArt(
   let mirror = false;
   let scale = 1.5;
   const appearance = entityAppearance(entity);
+  if (appearance?.emoji) {
+    const texture = emojiTexture(appearance.emoji);
+    const size = 24 * (appearance.scale ?? 1);
+    if (sprite.texture !== texture) sprite.texture = texture;
+    sprite.tint = 0xffffff;
+    sprite.anchor.set(0, 0);
+    sprite.scale.set(size / texture.width);
+    sprite.position.set(16 - size / 2, 30 - size);
+    return true;
+  }
   const set = directionalSet(entity, appearance);
   const actor = set !== undefined;
   if (set) {

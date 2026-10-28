@@ -33,7 +33,7 @@ export const ITEMS: ItemDef[] = [
   {
     id: 'bridges:walkway',
     name: 'Plank Walkway',
-    tags: ['consumable', 'construction', 'merchandise'],
+    tags: ['consumable', 'construction', 'tool', 'merchandise'],
     stack: 30,
     value: 6,
     use: 'bridges:lay',
