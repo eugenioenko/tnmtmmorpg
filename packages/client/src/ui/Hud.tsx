@@ -321,6 +321,18 @@ function ActionBar({ rt }: { rt: HudRuntime }) {
         })}
       </div>
       <div className="menu-row">
+        <button
+          type="button"
+          className={`menu-btn${rt.controls.view.running ? ' active' : ''}`}
+          title={rt.controls.view.running ? 'Running — click or Z to walk (hold Shift to walk for now)' : 'Walking — click or Z to run (hold Shift to run for now)'}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            rt.controls.toggleRun();
+          }}
+        >
+          {rt.controls.view.running ? '🏃' : '🚶'}
+          <span className="key">Z</span>
+        </button>
         {buttons.map((w) => (
           <button
             key={w.id}
@@ -469,7 +481,7 @@ function DebugDrawer({ rt, devPanels }: { rt: HudRuntime; devPanels: Record<stri
       </div>
       <h4>Controls</h4>
       <div className="hint">
-        Shift+WASD: 100-tile stride · Tab: target enemy · Esc: cancel · F3: this drawer
+        Alt+WASD: 100-tile stride · Z: run/walk (Shift inverts while held) · Tab: target enemy · Esc: cancel · F3: this drawer
       </div>
       <h4>Feature tools</h4>
       {Object.entries(devPanels).map(([id, Panel]) => (

@@ -7,15 +7,19 @@ import { chebyshev, findPath, type Tile } from './pathfind.ts';
 /**
  * Player input: hold-to-walk, click-to-move, click-to-act and Space to use
  * whatever is in reach. Movement stays one tile per intent; the controller
- * paces intents to one step every STEP_TICKS server ticks, sent right after a
+ * paces intents to one step every STEP_TICKS server ticks (RUN_STEP_TICKS
+ * while running), sent right after a
  * snapshot so each lands at the start of the next tick, which keeps the
  * cadence regular enough for the renderer to slide between tiles without
  * stopping.
  */
 
 const STEP_TICKS = 2;
+const RUN_STEP_TICKS = 1;
 /** Wall-clock floor between steps, so a burst of late snapshots cannot fire a volley. */
 const STEP_MIN_MS = 170;
+const RUN_STEP_MIN_MS = 85;
+const RUN_KEY = 'tnmt:run';
 /** Matches combat's player swing cooldown. */
 const ATTACK_TICKS = 7;
 /** A step that has not shown up after this many ticks is treated as blocked. */
@@ -51,6 +55,16 @@ export interface ControlsView {
   prompt: Prompt | null;
   mouseX: number;
   mouseY: number;
+  /** Run toggle (Z); holding Shift does the opposite while held. */
+  running: boolean;
+}
+
+function loadRunning(): boolean {
+  try {
+    return localStorage.getItem(RUN_KEY) !== '0';
+  } catch {
+    return true;
+  }
 }
 
 export class Controls {
@@ -60,7 +74,9 @@ export class Controls {
     prompt: null,
     mouseX: 0,
     mouseY: 0,
+    running: loadRunning(),
   };
+  private shiftHeld = false;
   private readonly held: Direction[] = [];
   private path: Tile[] | null = null;
   private destination: Tile | null = null;
@@ -104,7 +120,10 @@ export class Controls {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
     window.addEventListener('keyup', (e) => this.onKeyUp(e));
-    window.addEventListener('blur', () => (this.held.length = 0));
+    window.addEventListener('blur', () => {
+      this.held.length = 0;
+      this.shiftHeld = false;
+    });
   }
 
   private me(): EntityState | undefined {
@@ -196,13 +215,29 @@ export class Controls {
     this.advance();
   }
 
+  /** Whether the next step is a running one. */
+  isRunning(): boolean {
+    return this.view.running !== this.shiftHeld;
+  }
+
+  toggleRun(): void {
+    this.view.running = !this.view.running;
+    try {
+      localStorage.setItem(RUN_KEY, this.view.running ? '1' : '0');
+    } catch {
+      /* private mode: the toggle just won't stick */
+    }
+    this.notify(this.view.running ? 'You break into a run. (Z to walk)' : 'You slow to a walk. (Z to run)');
+  }
+
   private onKeyDown(e: KeyboardEvent): void {
     if (e.target instanceof Element && e.target.closest('#ui-overlay input, #ui-overlay textarea')) return;
     if (this.keyboardLocked) return;
+    if (e.key === 'Shift') this.shiftHeld = true;
     const dir = KEY_DIRS[e.code];
     if (dir) {
       e.preventDefault();
-      if (e.shiftKey) {
+      if (e.altKey) {
         if (!e.repeat) this.send({ t: 'intent', kind: 'move', dir, dist: STRIDE });
         return;
       }
@@ -220,10 +255,13 @@ export class Controls {
       this.targetNearestHostile();
     } else if (e.code === 'Escape') {
       this.stop();
+    } else if (e.code === 'KeyZ' && !e.ctrlKey && !e.metaKey) {
+      this.toggleRun();
     }
   }
 
   private onKeyUp(e: KeyboardEvent): void {
+    if (e.key === 'Shift') this.shiftHeld = false;
     const dir = KEY_DIRS[e.code];
     if (!dir) return;
     const i = this.held.indexOf(dir);
@@ -323,9 +361,10 @@ export class Controls {
 
     if (this.pending && this.handlePending(me)) return;
 
-    if (this.tick - this.lastStepTick < STEP_TICKS) return;
+    const running = this.isRunning();
+    if (this.tick - this.lastStepTick < (running ? RUN_STEP_TICKS : STEP_TICKS)) return;
     const now = performance.now();
-    if (now - this.lastStepAt < STEP_MIN_MS) return;
+    if (now - this.lastStepAt < (running ? RUN_STEP_MIN_MS : STEP_MIN_MS)) return;
 
     const dir = this.nextDirection(me);
     if (!dir) return;
