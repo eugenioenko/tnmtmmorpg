@@ -18,7 +18,7 @@ pnpm world:reset     # generate a fresh 10000x10000 world (seed 42)
 pnpm dev             # server on :3010, client on :5173
 ```
 
-Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items, **Enter** chats (`/help` lists channels and emotes, `R` replies to a whisper). Windows: `C` character, `I` inventory, `J` journal, `K` crafting. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
+Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it, click another player to trade. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items, **Enter** chats (`/help` lists channels and emotes, `R` replies to a whisper). Windows: `C` character, `I` inventory, `J` journal, `K` crafting, `P` professions, `L` your path. From level 5 you choose a class (Warrior, Ranger or Mystic) whose abilities sit on `Q` `F` `G` `T` and use your current target. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
 
 ```bash
 pnpm create-feature my-idea    # scaffold features/my-idea/, runs as-is
@@ -36,7 +36,10 @@ for organization, rebuilding, and replacement with the final art.
 Players start in a village beside four labeled travel pads. The elder, the guard
 captain, the alchemist and the trader hand out quests and trade; the wilds outside
 the village get more dangerous the farther you go, and each world beyond the pads
-has its own creatures. Progress is kept per browser across reconnects.
+has its own creatures. Cave mouths in the hills lead to instanced dungeons with a
+guardian and its hoard at the bottom; the first is a short walk north of the village.
+With a pickaxe or hatchet from the trader you can mine ore veins and fell trees, then
+smelt, saw and smith your own gear at the forge and sawbench in the square. Progress is kept per browser across reconnects.
 
 ---
 
@@ -125,6 +128,8 @@ export default defineClient({
   items: [...],                              // names, icons, descriptions, `use` command
   interactions: {                            // click it / Space beside it
     'mossy-caves:altar': { intent: 'mossy-caves:pray', label: 'Pray at' },
+    // also: range, quickUse: false (click only), opens: 'crafting' (open a window
+    // instead of sending), requires: 'item:id' (only while carrying that item)
   },
   windows: {                                 // framed HUD window + action-bar button
     'mossy-caves:log': { title: 'Spores', icon: '🍄', hotkey: 'KeyP', component: SporeLog },

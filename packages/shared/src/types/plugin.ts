@@ -227,6 +227,16 @@ export interface Interaction {
   /** Verb shown in prompts and tooltips, e.g. 'Enter', 'Talk'. */
   label: string;
   range?: number;
+  /** False keeps it off Space/E "use the nearest thing"; it then needs a click. */
+  quickUse?: boolean;
+  /** Open this HUD window on arrival instead of sending the intent (e.g. 'crafting'). */
+  opens?: string;
+  /**
+   * Only offered while the local player carries this item id; otherwise a
+   * click on the entity is a plain walk. Keeps every tree in a forest from
+   * becoming a chore for someone without a hatchet.
+   */
+  requires?: string;
 }
 
 /**
@@ -263,6 +273,8 @@ export interface ClientAPI {
    * and the top of its tile, following the smoothed walk. Null when unknown.
    */
   screenOf(id: number): { x: number; y: number } | null;
+  /** The entity the player has targeted (clicked or Tab), if any. */
+  target(): number | null;
   /** Open or close one of the HUD windows by id. */
   toggleWindow(id: string, open?: boolean): void;
   /** A large centred announcement that fades by itself. */

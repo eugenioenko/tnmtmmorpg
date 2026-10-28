@@ -16,6 +16,13 @@ import {
  *                 NPC swung at its target. Core does not know what a swing
  *                 does; this feature decides. With the feature disabled,
  *                 NPC swings are simply inert.
+ * - two listeners for other features' abilities:
+ *                 'combat:strike' { attackerId, targetId, power?, bonus?,
+ *                 range?, pierce?, element? } — a hit scaled from the
+ *                 attacker's attack, optionally at range or through armour;
+ *                 'combat:modifier' { entityId, taken, ticks } — for a
+ *                 while, damage taken is multiplied by `taken` (0.5 for a
+ *                 shield, 1.3 for a mark).
  * - three events: 'entity:damage' and 'entity:death', both announced
  *                 spatially (only entities near the victim hear them), so
  *                 other features hook loot, graves or aggro without
@@ -76,7 +83,35 @@ export interface KilledEvent {
  * Exported so the verification scripts can drive it directly; features talk
  * to combat through the command and the events, never by importing this.
  */
-export function applyAttack(world: WorldAPI, attackerId: number, targetId: number): void {
+export interface StrikeOptions {
+  /** Multiplier on the attacker's attack. */
+  power?: number;
+  /** Flat damage added after the multiplier. */
+  bonus?: number;
+  /** Reach in tiles (Chebyshev); melee is 1. */
+  range?: number;
+  /** Fraction of the target's defense ignored, 0..1. */
+  pierce?: number;
+  element?: string;
+}
+
+/** Damage-taken multipliers with an expiry tick, per entity. */
+const modifiers = new Map<number, { taken: number; until: number }[]>();
+
+function takenMultiplier(id: number): number {
+  const list = modifiers.get(id);
+  if (!list) return 1;
+  let m = 1;
+  for (const mod of list) if (mod.until > swingClock) m *= mod.taken;
+  return m;
+}
+
+export function applyAttack(
+  world: WorldAPI,
+  attackerId: number,
+  targetId: number,
+  options: StrikeOptions = {},
+): void {
   const attacker = world.get(attackerId);
   const target = world.get(targetId);
   if (!attacker || !target) return;
@@ -85,13 +120,15 @@ export function applyAttack(world: WorldAPI, attackerId: number, targetId: numbe
   const tStats = target.components.stats;
   if (!isStatsComponent(aStats) || !isStatsComponent(tStats)) return;
 
-  // Adjacency gate: must be within 1 tile (Chebyshev distance), same world.
-  if (abs(attacker.x - target.x) > 1 || abs(attacker.y - target.y) > 1) return;
+  // Reach gate: within `range` tiles (Chebyshev distance; 1 = adjacent), same world.
+  const range = options.range ?? 1;
+  if (abs(attacker.x - target.x) > range || abs(attacker.y - target.y) > range) return;
   if ((attacker.world ?? 'overworld') !== (target.world ?? 'overworld')) return;
   if (tStats.hp <= 0 || aStats.hp <= 0) return;
 
-  const rawDamage = aStats.atk;
-  const finalDamage = max(1, floor(rawDamage - tStats.def * 0.5));
+  const rawDamage = floor(aStats.atk * (options.power ?? 1) + (options.bonus ?? 0));
+  const armour = tStats.def * 0.5 * (1 - (options.pierce ?? 0));
+  const finalDamage = max(1, floor((rawDamage - armour) * takenMultiplier(targetId)));
   const hp = max(0, tStats.hp - finalDamage);
 
   // get() handed us a detached copy: build the new component and write it
@@ -110,7 +147,7 @@ export function applyAttack(world: WorldAPI, attackerId: number, targetId: numbe
       sourceId: attackerId,
       amount: finalDamage,
       rawAmount: rawDamage,
-      element: 'physical',
+      element: options.element ?? 'physical',
     } satisfies DamageEvent,
     target.world,
   );
@@ -164,6 +201,13 @@ export default definePlugin({
         if (swingClock % 600 === 0) {
           for (const id of lastSwing.keys()) if (!world.get(id)) lastSwing.delete(id);
         }
+        if (swingClock % 50 === 0) {
+          for (const [id, list] of modifiers) {
+            const live = list.filter((m) => m.until > swingClock);
+            if (live.length === 0 || !world.get(id)) modifiers.delete(id);
+            else modifiers.set(id, live);
+          }
+        }
         // Without a reviver installed, a felled player gets back up at once.
         if (swingClock % 20 === 0) {
           for (const p of world.query('player', 'stats')) {
@@ -199,6 +243,29 @@ export default definePlugin({
   ],
 
   events: {
+    'combat:strike': (world, payload) => {
+      const attackerId = readId(payload, 'attackerId');
+      const targetId = readId(payload, 'targetId');
+      if (attackerId === undefined || targetId === undefined) return;
+      const p = payload as Record<string, unknown>;
+      const num = (key: string): number | undefined => (typeof p[key] === 'number' ? (p[key] as number) : undefined);
+      applyAttack(world, attackerId, targetId, {
+        power: num('power'),
+        bonus: num('bonus'),
+        range: num('range'),
+        pierce: num('pierce'),
+        element: typeof p.element === 'string' ? p.element : undefined,
+      });
+    },
+    'combat:modifier': (_world, payload) => {
+      const entityId = readId(payload, 'entityId');
+      const p = payload as { taken?: unknown; ticks?: unknown };
+      if (entityId === undefined || typeof p.taken !== 'number' || typeof p.ticks !== 'number') return;
+      if (p.taken <= 0 || p.ticks <= 0) return;
+      const list = (modifiers.get(entityId) ?? []).filter((m) => m.until > swingClock);
+      list.push({ taken: p.taken, until: swingClock + p.ticks });
+      modifiers.set(entityId, list);
+    },
     /**
      * A chasing NPC swung at its target. Core's NPC system decides WHEN an
      * NPC swings (that is AI, and it re-checks adjacency itself); what a

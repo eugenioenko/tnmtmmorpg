@@ -825,7 +825,12 @@ async function integrationTests(): Promise<void> {
     a.send({ t: 'intent', kind: 'swap', a: 0, b: 1 });
     snap = await a.waitFor((s) => {
       const inv = invOfEntity(byId(s, a.entityId))!;
-      return inv.slots[0].itemId === slot1.itemId && inv.slots[1].itemId === slot0.itemId;
+      return (
+        inv.slots[0].itemId === slot1.itemId &&
+        inv.slots[0].count === slot1.count &&
+        inv.slots[1].itemId === slot0.itemId &&
+        inv.slots[1].count === slot0.count
+      );
     }, 'swap exchanged slots 0 and 1');
 
     // ── persistence across a server restart ──

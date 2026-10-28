@@ -22,7 +22,7 @@ import type {
   TileState,
   WorldCoord,
 } from '@game/shared';
-import { MAX_VIEW_OFFSET } from '@game/shared';
+import { isCarvedWorld, MAX_VIEW_OFFSET } from '@game/shared';
 import {
   VIEW_RADIUS_X,
   VIEW_RADIUS_Y,
@@ -104,7 +104,7 @@ function scanTiles(
   // is wrong inside a building: there, "not told about" must read as void.
   // So interiors send every tile and skip nothing.
   const spec = world.spec(inWorld);
-  const skip = spec?.generator === 'rooms' ? null : 'grass';
+  const skip = isCarvedWorld(spec) ? null : 'grass';
   const w = spec?.width ?? 0;
   const h = spec?.height ?? 0;
 

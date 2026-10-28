@@ -7,6 +7,7 @@ import {
   type FullSnapshot,
   type Intent,
   type Interaction,
+  type InventoryComponent,
   type ItemDef,
   type RecipesMessage,
   type WelcomeMessage,
@@ -15,7 +16,7 @@ import { registerEmoji } from './emoji-atlas.ts';
 import { createGame, type Game } from './game.ts';
 import { registerItems } from './items.ts';
 import { registerRecipes } from './recipes.ts';
-import { registerInteractions } from './interactions.ts';
+import { registerInteractions, setCarryCheck } from './interactions.ts';
 import { Controls } from './controls.ts';
 import { App, registerCoreWindows, type FeatureComponent, type FeaturePanel } from './ui/App.tsx';
 import { HudRuntime } from './ui/runtime.ts';
@@ -161,6 +162,10 @@ async function main(): Promise<void> {
   // Pixi canvas + game layer (60fps render loop, snapshot interpolation).
   game = await createGame();
   game.state.connected = true;
+  setCarryCheck((itemId) => {
+    const inv = game.localPlayer()?.components.inventory as InventoryComponent | undefined;
+    return inv?.slots?.some((s) => s.itemId === itemId && s.count > 0) ?? false;
+  });
 
   // Replay any early messages that arrived while PixiJS was initialising
   while (pending.length > 0) {
@@ -295,7 +300,12 @@ async function main(): Promise<void> {
   // Input and HUD. Clicking a creature attacks it through 'combat:attack', a
   // FEATURE command: with combat uninstalled the server rejects the kind.
   let hud: HudRuntime | null = null;
-  const controls = new Controls(game, sendIntent, (text) => hud?.notify(text, 'bad'));
+  const controls = new Controls(
+    game,
+    sendIntent,
+    (text) => hud?.notify(text, 'bad'),
+    (id) => hud?.toggle(id, true),
+  );
   hud = new HudRuntime(game, controls, sendIntent);
   registerCoreWindows(hud);
   for (const [id, win] of Object.entries(features.windows)) hud.windows.set(id, { ...win, id });

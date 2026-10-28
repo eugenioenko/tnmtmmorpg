@@ -81,6 +81,7 @@ export class Controls {
     private readonly game: Game,
     private readonly send: (intent: Intent) => void,
     private readonly notify: (text: string) => void,
+    private readonly openWindow?: (id: string) => void,
   ) {
     game.onSnapshot((state) => this.onSnapshot(state));
     game.setPointerSink({
@@ -245,6 +246,7 @@ export class Controls {
       if (d > maxDist) continue;
       const action = actionFor(entity, me.id);
       if (action.type !== 'interact' && action.type !== 'pickup') continue;
+      if (action.type === 'interact' && action.interaction.quickUse === false) continue;
       const rank = d + (action.type === 'pickup' ? 0.5 : 0);
       if (!best || rank < best.d) best = { entity, action, d: rank };
     }
@@ -348,7 +350,8 @@ export class Controls {
       this.game.setMarker(null);
       switch (pending.action.type) {
         case 'interact':
-          this.send({ t: 'intent', kind: pending.action.interaction.intent, targetId: target.id });
+          if (pending.action.interaction.opens) this.openWindow?.(pending.action.interaction.opens);
+          else this.send({ t: 'intent', kind: pending.action.interaction.intent, targetId: target.id });
           this.pending = null;
           return true;
         case 'pickup':
