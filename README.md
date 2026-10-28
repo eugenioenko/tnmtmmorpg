@@ -18,7 +18,7 @@ pnpm world:reset     # generate a fresh 10000x10000 world (seed 42)
 pnpm dev             # server on :3010, client on :5173
 ```
 
-Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it, click another player to trade. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items, **Enter** chats (`/help` lists channels and emotes, `R` replies to a whisper). Windows: `C` character, `I` inventory, `J` journal, `K` crafting, `P` professions. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
+Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it, click another player to trade. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items, **Enter** chats (`/help` lists channels and emotes, `R` replies to a whisper). Windows: `C` character, `I` inventory, `J` journal, `K` crafting, `P` professions, `L` your path. From level 5 you choose a class (Warrior, Ranger or Mystic) whose abilities sit on `Q` `F` `G` `T` and use your current target. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
 
 ```bash
 pnpm create-feature my-idea    # scaffold features/my-idea/, runs as-is

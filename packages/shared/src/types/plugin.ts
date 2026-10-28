@@ -273,6 +273,8 @@ export interface ClientAPI {
    * and the top of its tile, following the smoothed walk. Null when unknown.
    */
   screenOf(id: number): { x: number; y: number } | null;
+  /** The entity the player has targeted (clicked or Tab), if any. */
+  target(): number | null;
   /** Open or close one of the HUD windows by id. */
   toggleWindow(id: string, open?: boolean): void;
   /** A large centred announcement that fades by itself. */
