@@ -229,6 +229,14 @@ export interface Interaction {
   range?: number;
   /** False keeps it off Space/E "use the nearest thing"; it then needs a click. */
   quickUse?: boolean;
+  /** Open this HUD window on arrival instead of sending the intent (e.g. 'crafting'). */
+  opens?: string;
+  /**
+   * Only offered while the local player carries this item id; otherwise a
+   * click on the entity is a plain walk. Keeps every tree in a forest from
+   * becoming a chore for someone without a hatchet.
+   */
+  requires?: string;
 }
 
 /**

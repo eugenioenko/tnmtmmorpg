@@ -172,7 +172,7 @@ function CharacterSheet({ client }: { client: ClientAPI }) {
       <div className="section-title">Equipment</div>
       {(['weapon', 'armor', 'charm'] as const).map((slot) => {
         const id = c.equipment[slot];
-        const def = id ? ITEMS.find((i) => i.id === id) : undefined;
+        const def = id ? client.itemDef(id) : undefined;
         return (
           <div key={slot} className="equip-row">
             <div className="icon">{def?.icon ?? '·'}</div>

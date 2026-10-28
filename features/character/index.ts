@@ -85,40 +85,40 @@ function levelForXp(xp: number): number {
   return level;
 }
 
-type Effect =
-  | { kind: 'heal'; amount: number }
-  | { kind: 'equip'; slot: keyof EquipmentSlots; atk?: number; def?: number; hp?: number };
-
-const EFFECTS: Record<string, Effect> = {
-  'character:bread': { kind: 'heal', amount: 25 },
-  'character:minor_draught': { kind: 'heal', amount: 45 },
-  'character:draught': { kind: 'heal', amount: 110 },
-  'character:greater_draught': { kind: 'heal', amount: 260 },
-  'character:rusty_sword': { kind: 'equip', slot: 'weapon', atk: 4 },
-  'character:iron_sword': { kind: 'equip', slot: 'weapon', atk: 9 },
-  'character:war_axe': { kind: 'equip', slot: 'weapon', atk: 15 },
-  'character:runed_blade': { kind: 'equip', slot: 'weapon', atk: 24 },
-  'character:leather_jerkin': { kind: 'equip', slot: 'armor', def: 3 },
-  'character:chain_mail': { kind: 'equip', slot: 'armor', def: 7 },
-  'character:scale_hauberk': { kind: 'equip', slot: 'armor', def: 12, hp: 20 },
-  'character:wolf_tooth_charm': { kind: 'equip', slot: 'charm', hp: 30 },
-  'character:ember_charm': { kind: 'equip', slot: 'charm', atk: 5, hp: 20 },
+const HEALS: Record<string, number> = {
+  'character:bread': 25,
+  'character:minor_draught': 45,
+  'character:draught': 110,
+  'character:greater_draught': 260,
 };
+
+type Gear = NonNullable<ItemDef['equip']>;
+let gearById: Map<string, Gear> | null = null;
+
+/** Gear stats from every installed feature's items; the registry is fixed after boot. */
+function gearOf(world: WorldAPI, itemId: string | undefined): Gear | undefined {
+  if (!itemId) return undefined;
+  if (!gearById) {
+    gearById = new Map();
+    for (const def of world.queryItemsByTag('equipment')) if (def.equip) gearById.set(def.id, def.equip);
+  }
+  return gearById.get(itemId);
+}
 
 export const ITEMS: ItemDef[] = [
   { id: 'character:bread', name: 'Travel Bread', tags: ['consumable', 'food', 'merchandise'], stack: 20, value: 4, use: 'character:use', useLabel: 'Eat', icon: '🍞', description: 'Dense and filling. Restores 25 health.' },
   { id: 'character:minor_draught', name: 'Minor Healing Draught', tags: ['consumable', 'potion', 'merchandise'], stack: 10, value: 12, use: 'character:use', useLabel: 'Drink', icon: '🧪', description: 'A bitter herbal tonic. Restores 45 health.' },
   { id: 'character:draught', name: 'Healing Draught', tags: ['consumable', 'potion', 'merchandise'], stack: 10, value: 35, use: 'character:use', useLabel: 'Drink', icon: '⚗️', description: 'The alchemist’s good stuff. Restores 110 health.' },
   { id: 'character:greater_draught', name: 'Greater Draught', tags: ['consumable', 'potion'], stack: 10, value: 90, use: 'character:use', useLabel: 'Drink', icon: '🍷', description: 'Thick and red as heartwood. Restores 260 health.' },
-  { id: 'character:rusty_sword', name: 'Rusty Sword', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 25, use: 'character:use', useLabel: 'Equip', icon: '🗡️', description: 'Better than bare hands. +4 attack.' },
-  { id: 'character:iron_sword', name: 'Iron Sword', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 90, use: 'character:use', useLabel: 'Equip', icon: '⚔️', description: 'Honest smithing. +9 attack.' },
-  { id: 'character:war_axe', name: 'Bearded War Axe', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 240, use: 'character:use', useLabel: 'Equip', icon: '🪓', description: 'Heavy enough to argue with. +15 attack.' },
-  { id: 'character:runed_blade', name: 'Runed Blade', tags: ['weapon', 'equipment'], stack: 1, value: 600, use: 'character:use', useLabel: 'Equip', icon: '🔪', description: 'Etched with marks nobody remembers. +24 attack.' },
-  { id: 'character:leather_jerkin', name: 'Leather Jerkin', tags: ['armor', 'equipment', 'merchandise'], stack: 1, value: 30, use: 'character:use', useLabel: 'Equip', icon: '🦺', description: 'Boiled leather, well oiled. +3 defense.' },
-  { id: 'character:chain_mail', name: 'Chain Mail', tags: ['armor', 'equipment', 'merchandise'], stack: 1, value: 130, use: 'character:use', useLabel: 'Equip', icon: '🥋', description: 'Rings on rings. +7 defense.' },
-  { id: 'character:scale_hauberk', name: 'Scale Hauberk', tags: ['armor', 'equipment'], stack: 1, value: 380, use: 'character:use', useLabel: 'Equip', icon: '🛡️', description: 'Overlapping plates. +12 defense, +20 health.' },
-  { id: 'character:wolf_tooth_charm', name: 'Wolf-Tooth Charm', tags: ['charm', 'equipment', 'merchandise'], stack: 1, value: 70, use: 'character:use', useLabel: 'Equip', icon: '📿', description: 'Hunters swear by it. +30 health.' },
-  { id: 'character:ember_charm', name: 'Ember Charm', tags: ['charm', 'equipment'], stack: 1, value: 260, use: 'character:use', useLabel: 'Equip', icon: '🔥', description: 'Warm to the touch, always. +5 attack, +20 health.' },
+  { id: 'character:rusty_sword', name: 'Rusty Sword', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 25, use: 'character:use', useLabel: 'Equip', icon: '🗡️', description: 'Better than bare hands. +4 attack.', equip: { slot: 'weapon', atk: 4 } },
+  { id: 'character:iron_sword', name: 'Iron Sword', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 90, use: 'character:use', useLabel: 'Equip', icon: '⚔️', description: 'Honest smithing. +9 attack.', equip: { slot: 'weapon', atk: 9 } },
+  { id: 'character:war_axe', name: 'Bearded War Axe', tags: ['weapon', 'equipment', 'merchandise'], stack: 1, value: 240, use: 'character:use', useLabel: 'Equip', icon: '🪓', description: 'Heavy enough to argue with. +15 attack.', equip: { slot: 'weapon', atk: 15 } },
+  { id: 'character:runed_blade', name: 'Runed Blade', tags: ['weapon', 'equipment'], stack: 1, value: 600, use: 'character:use', useLabel: 'Equip', icon: '🔪', description: 'Etched with marks nobody remembers. +24 attack.', equip: { slot: 'weapon', atk: 24 } },
+  { id: 'character:leather_jerkin', name: 'Leather Jerkin', tags: ['armor', 'equipment', 'merchandise'], stack: 1, value: 30, use: 'character:use', useLabel: 'Equip', icon: '🦺', description: 'Boiled leather, well oiled. +3 defense.', equip: { slot: 'armor', def: 3 } },
+  { id: 'character:chain_mail', name: 'Chain Mail', tags: ['armor', 'equipment', 'merchandise'], stack: 1, value: 130, use: 'character:use', useLabel: 'Equip', icon: '🥋', description: 'Rings on rings. +7 defense.', equip: { slot: 'armor', def: 7 } },
+  { id: 'character:scale_hauberk', name: 'Scale Hauberk', tags: ['armor', 'equipment'], stack: 1, value: 380, use: 'character:use', useLabel: 'Equip', icon: '🛡️', description: 'Overlapping plates. +12 defense, +20 health.', equip: { slot: 'armor', def: 12, hp: 20 } },
+  { id: 'character:wolf_tooth_charm', name: 'Wolf-Tooth Charm', tags: ['charm', 'equipment', 'merchandise'], stack: 1, value: 70, use: 'character:use', useLabel: 'Equip', icon: '📿', description: 'Hunters swear by it. +30 health.', equip: { slot: 'charm', hp: 30 } },
+  { id: 'character:ember_charm', name: 'Ember Charm', tags: ['charm', 'equipment'], stack: 1, value: 260, use: 'character:use', useLabel: 'Equip', icon: '🔥', description: 'Warm to the touch, always. +5 attack, +20 health.', equip: { slot: 'charm', atk: 5, hp: 20 } },
 ];
 
 const FIRST = ['Aldric', 'Bryn', 'Cael', 'Dara', 'Edda', 'Fenn', 'Garrow', 'Hesk', 'Ilsa', 'Jory', 'Kestrel', 'Lorn', 'Mira', 'Nell', 'Orrin', 'Perrin', 'Quill', 'Rowan', 'Sable', 'Tamsin', 'Ulric', 'Vesna', 'Wren', 'Yara'];
@@ -154,21 +154,21 @@ function isInventory(value: unknown): value is InventoryComponent {
   return Array.isArray(inv.slots) && typeof inv.capacity === 'number';
 }
 
-function bonuses(equipment: EquipmentSlots): { atk: number; def: number; hp: number } {
+function bonuses(world: WorldAPI, equipment: EquipmentSlots): { atk: number; def: number; hp: number } {
   const total = { atk: 0, def: 0, hp: 0 };
   for (const id of Object.values(equipment)) {
-    const effect = id ? EFFECTS[id] : undefined;
-    if (effect?.kind !== 'equip') continue;
-    total.atk += effect.atk ?? 0;
-    total.def += effect.def ?? 0;
-    total.hp += effect.hp ?? 0;
+    const gear = gearOf(world, id);
+    if (!gear) continue;
+    total.atk += gear.atk ?? 0;
+    total.def += gear.def ?? 0;
+    total.hp += gear.hp ?? 0;
   }
   return total;
 }
 
 /** Stats as they follow from level and gear; hp is carried over, clamped. */
-function deriveStats(level: number, equipment: EquipmentSlots, hp: number): StatsComponent {
-  const b = bonuses(equipment);
+function deriveStats(world: WorldAPI, level: number, equipment: EquipmentSlots, hp: number): StatsComponent {
+  const b = bonuses(world, equipment);
   const maxHp = BASE.hp + PER_LEVEL.hp * (level - 1) + b.hp;
   return {
     level,
@@ -205,7 +205,7 @@ function createCharacter(world: WorldAPI, e: EntityState): void {
   const c = freshCharacter(world);
   pushLog(c, `You are ${c.name}. The village elder has been asking for help.`, 'quest');
   const hp = isStatsComponent(stats) ? stats.hp : BASE.hp;
-  world.update(e.id, { character: c, stats: deriveStats(1, {}, hp), appearance: appearanceFor(c.look) });
+  world.update(e.id, { character: c, stats: deriveStats(world, 1, {}, hp), appearance: appearanceFor(c.look) });
   firstSeen.delete(e.id);
 }
 
@@ -254,7 +254,7 @@ function grant(
     c.xp += xp;
     const level = levelForXp(c.xp);
     if (level > r.s.level) {
-      const stats = deriveStats(level, c.equipment, 0);
+      const stats = deriveStats(world, level, c.equipment, 0);
       stats.hp = stats.maxHp;
       pushLog(c, `You reached level ${level}! (+${PER_LEVEL.hp} health, +${PER_LEVEL.atk} attack, +${PER_LEVEL.def} defense)`, 'level');
       world.update(id, { stats });
@@ -285,31 +285,35 @@ function useItem(world: WorldAPI, id: number, slot: number): void {
   const inv = e?.components.inventory;
   if (!isInventory(inv)) return;
   const itemId = inv.slots[slot]?.itemId;
-  const effect = itemId ? EFFECTS[itemId] : undefined;
+  const heal = itemId ? HEALS[itemId] : undefined;
+  const gear = gearOf(world, itemId);
   const r = read(world, id);
-  if (!effect || !r) return;
-  const name = ITEMS.find((i) => i.id === itemId)?.name ?? itemId;
+  if ((heal === undefined && !gear) || !r || !itemId) return;
+  const name =
+    ITEMS.find((i) => i.id === itemId)?.name ??
+    world.queryItemsByTag('equipment').find((i) => i.id === itemId)?.name ??
+    itemId;
 
-  if (effect.kind === 'heal') {
+  if (heal !== undefined) {
     if (r.s.hp >= r.s.maxHp) {
       pushLog(r.c, 'You are already at full health.', 'info');
       world.update(id, { character: r.c });
       return;
     }
     if (!takeFromSlot(world, id, slot)) return;
-    const hp = r.s.hp + effect.amount > r.s.maxHp ? r.s.maxHp : r.s.hp + effect.amount;
+    const hp = r.s.hp + heal > r.s.maxHp ? r.s.maxHp : r.s.hp + heal;
     world.update(id, { stats: { ...r.s, hp } });
     dirty.add(id);
     return;
   }
 
-  if (!takeFromSlot(world, id, slot)) return;
-  const previous = r.c.equipment[effect.slot];
-  r.c.equipment[effect.slot] = itemId;
+  if (!gear || !takeFromSlot(world, id, slot)) return;
+  const previous = r.c.equipment[gear.slot];
+  r.c.equipment[gear.slot] = itemId;
   if (previous) {
     const left = world.give(id, previous, 1);
     if (left > 0) {
-      r.c.equipment[effect.slot] = previous;
+      r.c.equipment[gear.slot] = previous;
       world.give(id, itemId, 1);
       pushLog(r.c, 'Your pack is too full to swap gear.', 'bad');
       world.update(id, { character: r.c });
@@ -317,7 +321,7 @@ function useItem(world: WorldAPI, id: number, slot: number): void {
     }
   }
   pushLog(r.c, `You equip the ${name}.`, 'good');
-  world.update(id, { character: r.c, stats: deriveStats(r.s.level, r.c.equipment, r.s.hp) });
+  world.update(id, { character: r.c, stats: deriveStats(world, r.s.level, r.c.equipment, r.s.hp) });
   dirty.add(id);
 }
 
@@ -332,7 +336,7 @@ function unequip(world: WorldAPI, id: number, slotName: unknown): void {
     return;
   }
   delete r.c.equipment[slotName];
-  world.update(id, { character: r.c, stats: deriveStats(r.s.level, r.c.equipment, r.s.hp) });
+  world.update(id, { character: r.c, stats: deriveStats(world, r.s.level, r.c.equipment, r.s.hp) });
   dirty.add(id);
 }
 
@@ -381,14 +385,14 @@ function claim(world: WorldAPI, id: number, args: unknown): void {
   c.deaths = saved.deaths | 0;
   if (typeof saved.look === 'number') c.look = saved.look | 0;
   c.equipment = Object.fromEntries(
-    Object.entries(saved.equipment ?? {}).filter(([, v]) => typeof v === 'string' && EFFECTS[v]),
+    Object.entries(saved.equipment ?? {}).filter(([, v]) => typeof v === 'string' && gearOf(world, v)),
   ) as EquipmentSlots;
   const level = levelForXp(c.xp);
   c.xpPrev = xpForLevel(level);
   c.xpNext = xpForLevel(level + 1);
   pushLog(c, `Welcome back, ${c.name}.`, 'info');
   firstSeen.delete(id);
-  const stats = deriveStats(level, c.equipment, saved.hp > 0 ? saved.hp : 1);
+  const stats = deriveStats(world, level, c.equipment, saved.hp > 0 ? saved.hp : 1);
   const patch: Record<string, unknown> = { character: c, stats, appearance: appearanceFor(c.look) };
   if (saved.inventory && isInventory(saved.inventory)) patch.inventory = saved.inventory;
   world.update(id, patch);
