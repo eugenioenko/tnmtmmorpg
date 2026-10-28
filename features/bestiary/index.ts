@@ -1,7 +1,9 @@
 import {
   definePlugin,
+  isCarvedWorld,
   isStatsComponent,
   OVERWORLD,
+  resolveWorld,
   WORLD_CENTER_X,
   WORLD_CENTER_Y,
   type Direction,
@@ -22,6 +24,10 @@ import {
  * and the npc system moves them and announces their swings. Rewards go out
  * through 'character:grant'; the loot itself is handed over with
  * world.give, or left on the ground when the killer's pack is full.
+ *
+ * Other features place monsters with 'bestiary:spawn' { world, x, y, level,
+ * boss?: { name, title }, then?(world, id) }: a fitting species is scaled
+ * to the level asked for (a boss much further), and rewards scale with it.
  */
 
 interface Species {
@@ -79,6 +85,9 @@ export interface MonsterComponent {
   title: string;
   homeX: number;
   homeY: number;
+  /** XP and gold multiplier for monsters scaled up by 'bestiary:spawn'. */
+  reward?: number;
+  boss?: boolean;
 }
 
 /** Players this close to the world centre are in the village: nothing spawns there. */
@@ -162,7 +171,7 @@ function spawnMonster(world: WorldAPI, species: Species, x: number, y: number, w
 function populate(world: WorldAPI): void {
   for (const p of world.query('player')) {
     const worldId = p.world ?? OVERWORLD;
-    if (worldId.startsWith('interior:')) continue;
+    if (isCarvedWorld(resolveWorld(worldId))) continue;
     if (worldId === OVERWORLD && cheb(p, { x: WORLD_CENTER_X, y: WORLD_CENTER_Y }) < SAFE_RADIUS - 6) continue;
     const near = world.queryNear(p.x, p.y, POP_RADIUS, worldId).filter((e) => e.kind === 'bestiary:monster');
     if (near.length >= POP_TARGET) continue;
@@ -183,6 +192,63 @@ function populate(world: WorldAPI): void {
       break;
     }
   }
+}
+
+interface SpawnRequest {
+  world?: unknown;
+  x?: unknown;
+  y?: unknown;
+  level?: unknown;
+  boss?: { name?: unknown; title?: unknown };
+  then?: unknown;
+}
+
+/** A monster made to order: the toughest ordinary species at or under the level, scaled up to it. */
+function spawnScaled(world: WorldAPI, req: SpawnRequest): number | undefined {
+  if (typeof req.world !== 'string' || typeof req.x !== 'number' || typeof req.y !== 'number') return undefined;
+  const asked = typeof req.level === 'number' ? floor(req.level) : 1;
+  const level = asked < 1 ? 1 : asked > 30 ? 30 : asked;
+  const ordinary = SPECIES.filter((s) => !s.elite);
+  const fit = ordinary.filter((s) => s.level <= level && s.level >= level - 4);
+  const pool = fit.length > 0 ? fit : [ordinary.reduce((a, b) => (a.level <= b.level ? a : b))];
+  const species = pool[floor(world.rng() * pool.length)];
+  const gap = level > species.level ? level - species.level : 0;
+  const boss = typeof req.boss?.name === 'string';
+  const grow = 1 + 0.22 * gap;
+  const hp = floor(species.hp * grow * (boss ? 4.5 : 1));
+  const reward = (1 + 0.25 * gap) * (boss ? 6 : 1);
+  return world.spawn(
+    'bestiary:monster',
+    { x: req.x, y: req.y },
+    {
+      npc: { ai: 'bestiary:hunter', state: 'idle', lastActionTick: 0 },
+      movement: { speed: boss ? species.speed * 0.85 : species.speed, nextMoveTick: 0 },
+      stats: {
+        hp,
+        maxHp: hp,
+        atk: floor(species.atk * (1 + 0.12 * gap) * (boss ? 1.3 : 1)),
+        def: species.def + gap + (boss ? 4 : 0),
+        level,
+      },
+      monster: {
+        species: species.id,
+        title: boss && typeof req.boss?.title === 'string' ? req.boss.title : species.title,
+        homeX: req.x,
+        homeY: req.y,
+        reward,
+        boss,
+      } satisfies MonsterComponent,
+      name: boss ? (req.boss?.name as string) : species.name,
+      hostile: true,
+      appearance: {
+        creature: species.creature,
+        tint: species.tint,
+        scale: (species.scale ?? 1.5) * (boss ? 1.5 : 1),
+        desaturate: species.creature === 'dog',
+      },
+    },
+    req.world,
+  );
 }
 
 /** Monsters nobody is near any more go back to wherever monsters go. */
@@ -325,6 +391,13 @@ export default definePlugin({
   commands: [],
 
   events: {
+    'bestiary:spawn': (world, payload) => {
+      const req = payload as SpawnRequest;
+      const id = spawnScaled(world, req);
+      if (id !== undefined && typeof req.then === 'function') {
+        (req.then as (w: WorldAPI, id: number) => void)(world, id);
+      }
+    },
     'npc:register-ais': (_world, payload) => {
       const register = (payload as { register?: unknown }).register;
       if (typeof register === 'function') register('bestiary:hunter', hunter);
@@ -343,7 +416,12 @@ export default definePlugin({
       const killer = world.get(ev.killerId);
       if (!species || !killer || killer.kind !== 'player') return;
 
-      const gold = species.gold[0] + floor(world.rng() * (species.gold[1] - species.gold[0] + 1));
+      const reward = typeof monster.reward === 'number' && monster.reward > 0 ? monster.reward : 1;
+      const name = typeof ev.components?.name === 'string' ? ev.components.name : species.name;
+      const xp = floor(species.xp * reward);
+      const gold = floor(
+        (species.gold[0] + floor(world.rng() * (species.gold[1] - species.gold[0] + 1))) * reward,
+      );
       const drops = rollLoot(world, species);
       const parts: string[] = [];
       for (const drop of drops) {
@@ -356,11 +434,11 @@ export default definePlugin({
       const loot = [gold > 0 ? `${gold} gold` : '', ...parts].filter(Boolean).join(', ');
       world.emit('character:grant', {
         entityId: killer.id,
-        xp: species.xp,
+        xp,
         gold,
-        reason: `${species.name} defeated · +${species.xp} XP${loot ? ` · ${loot}` : ''}`,
+        reason: `${name} defeated · +${xp} XP${loot ? ` · ${loot}` : ''}`,
       });
-      world.emit('bestiary:slain', { killerId: killer.id, species: species.id, name: species.name, world: ev.world });
+      world.emit('bestiary:slain', { killerId: killer.id, species: species.id, name, world: ev.world });
     },
   },
 });

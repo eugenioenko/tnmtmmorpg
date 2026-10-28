@@ -12,9 +12,10 @@
  * Two kinds of world:
  *
  *   static     the overworld and the four themed worlds. Declared below.
- *   generated  interiors, one per door, id 'interior:<x>,<y>'. There is no
- *              list of these — the id encodes the door's position, and the
- *              spec is derived from it on demand (see resolveWorld).
+ *   generated  interiors, one per door, id 'interior:<x>,<y>', and dungeon
+ *              instances, id 'dungeon:<x>,<y>/<copy>'. There is no list of
+ *              these — the id encodes the entrance's position, and the spec
+ *              is derived from it on demand (see resolveWorld).
  *
  * Themed worlds re-use the SAME generator and the same 8 terrain bytes; only
  * the thresholds and the palette differ. So the fire world has the shape of a
@@ -70,14 +71,14 @@ export const DEFAULT_GEN: GenParams = {
 };
 
 /** How a world's chunks are produced. */
-export type GeneratorKind = 'terrain' | 'rooms';
+export type GeneratorKind = 'terrain' | 'rooms' | 'caves';
 
 export interface WorldSpec {
   id: string;
   width: number;
   height: number;
   seed: number;
-  /** 'terrain' = the noise generator; 'rooms' = carved interior. */
+  /** 'terrain' = the noise generator; 'rooms' = carved interior; 'caves' = a dungeon. */
   generator: GeneratorKind;
   gen: GenParams;
   /** Key into PALETTES; decides only how the client draws the same bytes. */
@@ -161,7 +162,19 @@ export const PALETTES: Record<string, Palette> = {
     [TILE_FLOOR]: 0x6b5a48,
     [TILE_WALL]: 0x3b3129,
   },
+
+  // Caves: packed earth under rock, drawn with the outdoor dirt and stone art.
+  cave: {
+    [TILE_VOID]: 0x000000,
+    [TILE_FLOOR]: 0x8a7d70,
+    [TILE_WALL]: 0x6d6258,
+  },
 };
+
+/** Worlds carved out of nothing (interiors, caves): unsent ground is void, not grass. */
+export function isCarvedWorld(spec: WorldSpec | undefined): boolean {
+  return spec !== undefined && spec.generator !== 'terrain';
+}
 
 /** Colour for a tile byte in a palette, falling back to the overworld. */
 export function paletteColor(palette: string, byte: number): number {
@@ -285,12 +298,53 @@ export function interiorSpec(id: string): WorldSpec | undefined {
   };
 }
 
+// ── dungeons ───────────────────────────────────────────────────────────────
+
+/** A cave is one chunk: a chain of chambers ending in the deepest one. */
+export const DUNGEON_SIZE = 64;
+
+/** Where a cave's entrance chamber is guaranteed to have floor: arrivals land here. */
+export const DUNGEON_ENTRY = { x: 8, y: 32 } as const;
+
+/**
+ * The world id for one copy of the cave whose entrance is at overworld
+ * (x, y). Every copy of a cave shares its layout (the seed comes from the
+ * entrance alone) so a party that splits up still knows the way; `copy`
+ * only keeps groups apart.
+ */
+export function dungeonWorldId(entranceX: number, entranceY: number, copy: number): string {
+  return `dungeon:${entranceX},${entranceY}/${copy}`;
+}
+
+export function isDungeonWorldId(id: string): boolean {
+  return id.startsWith('dungeon:');
+}
+
+export function dungeonSpec(id: string): WorldSpec | undefined {
+  if (!isDungeonWorldId(id)) return undefined;
+  const match = /^dungeon:(-?\d+),(-?\d+)\/(\d+)$/.exec(id);
+  if (!match) return undefined;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const seed = (((x * 2246822519 + y * 3266489917) ^ 0x2c1b3c6d) >>> 0) || 1;
+  return {
+    id,
+    name: 'Cave',
+    width: DUNGEON_SIZE,
+    height: DUNGEON_SIZE,
+    seed,
+    generator: 'caves',
+    gen: DEFAULT_GEN,
+    palette: 'cave',
+  };
+}
+
 const STATIC_BY_ID = new Map(STATIC_WORLDS.map((w) => [w.id, w]));
 
 /**
- * The spec for a world id: a declared world, or an interior derived from its
- * id, or undefined for an id nobody minted.
+ * The spec for a world id: a declared world, or an interior or dungeon
+ * derived from its id, or undefined for an id nobody minted.
  */
 export function resolveWorld(id: string): WorldSpec | undefined {
-  return STATIC_BY_ID.get(id) ?? interiorSpec(id);
+  return STATIC_BY_ID.get(id) ?? interiorSpec(id) ?? dungeonSpec(id);
 }

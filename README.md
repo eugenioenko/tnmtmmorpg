@@ -36,7 +36,8 @@ for organization, rebuilding, and replacement with the final art.
 Players start in a village beside four labeled travel pads. The elder, the guard
 captain, the alchemist and the trader hand out quests and trade; the wilds outside
 the village get more dangerous the farther you go, and each world beyond the pads
-has its own creatures. Progress is kept per browser across reconnects.
+has its own creatures. Cave mouths in the hills lead to instanced dungeons with a
+guardian and its hoard at the bottom; the first is a short walk north of the village. Progress is kept per browser across reconnects.
 
 ---
 

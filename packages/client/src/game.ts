@@ -7,6 +7,8 @@ import {
   TILE_BYTE_BY_KIND,
   TILE_SIZE,
   WALKABLE_TILES,
+  isCarvedWorld,
+  resolveWorld,
 } from '@game/shared';
 import { Camera } from './camera.ts';
 import { EntityRenderer, type EntityPointer } from './renderer/entities.ts';
@@ -403,16 +405,31 @@ export class Game {
     return { x: x * TILE_SIZE - this.camera.x, y: y * TILE_SIZE - this.camera.y };
   }
 
-  /** Core's walkability rule over the tiles this client knows about. */
+  /**
+   * Core's walkability rule over the tiles this client knows about. Unsent
+   * ground is grass outdoors (the server omits it) but solid nothing in an
+   * interior or a cave, where every carved tile is sent.
+   */
   walkable(x: number, y: number): boolean {
     const kind = this.knownTiles.get(`${x},${y}`);
-    if (kind === undefined) return true;
+    if (kind === undefined) return !this.carved();
     const byte = TILE_BYTE_BY_KIND[kind];
     return byte !== undefined && WALKABLE_TILES.has(byte);
   }
 
   tileKind(x: number, y: number): string {
-    return this.knownTiles.get(`${x},${y}`) ?? 'grass';
+    return this.knownTiles.get(`${x},${y}`) ?? (this.carved() ? 'void' : 'grass');
+  }
+
+  private carvedWorld = '';
+  private carvedFlag = false;
+
+  private carved(): boolean {
+    if (this.state.world !== this.carvedWorld) {
+      this.carvedWorld = this.state.world;
+      this.carvedFlag = isCarvedWorld(resolveWorld(this.state.world));
+    }
+    return this.carvedFlag;
   }
 
   entity(id: number): EntityState | undefined {

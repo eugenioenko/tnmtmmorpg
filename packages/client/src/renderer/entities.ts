@@ -38,6 +38,8 @@ interface RenderEntity {
   emoji: Sprite;
   /** Stack-count label, only on ground item entities. */
   countLabel: Text | null;
+  /** The floating `label` component text, kept in step when it changes. */
+  nameLabel: Text | null;
   /** Phase 6: progress bars drawn above stations with active crafting jobs. */
   craftBar: Graphics;
   /** Phase 7: health bar above damaged entities; invisible at full hp. */
@@ -243,6 +245,7 @@ export class EntityRenderer {
       rect,
       emoji,
       countLabel,
+      nameLabel: null,
       craftBar,
       hpBar,
       ring,
@@ -283,6 +286,7 @@ export class EntityRenderer {
       name.anchor.set(0.5, 1);
       name.position.set(16, render.marker === undefined ? emoji.y - 4 : -5);
       container.addChild(name);
+      render.nameLabel = name;
     }
     this.paintRect(render, entity.id === this.localEntityId);
     this.fitHitArea(render);
@@ -446,7 +450,13 @@ export class EntityRenderer {
       if (walking) render.art.walkTime += elapsed < 100 ? elapsed : 100;
       else render.art.walkTime = 0;
       const entity = byId.get(render.id);
-      if (entity) paintEntityArt(render.emoji, entity, render.art, now);
+      if (entity) {
+        paintEntityArt(render.emoji, entity, render.art, now);
+        const label = entity.components.label;
+        if (render.nameLabel && typeof label === 'string' && render.nameLabel.text !== label) {
+          render.nameLabel.text = label;
+        }
+      }
       render.lastUpdate = now;
       render.container.position.set(render.visX * TILE_SIZE, render.visY * TILE_SIZE);
       render.container.zIndex = render.visY * TILE_SIZE + (render.kind === 'item' ? -1 : 0);
