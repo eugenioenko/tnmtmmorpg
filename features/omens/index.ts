@@ -182,6 +182,7 @@ function reward(world: WorldAPI, o: Omen, x: number, y: number): string[] {
       const left = world.give(p.id, item, n);
       if (left > 0) world.spawn('item', { x: p.x, y: p.y }, { itemDrop: { itemId: item, count: left } }, p.world);
     }
+    world.emit('omens:slain', { entityId: p.id, name: o.name });
     world.emit('character:grant', {
       entityId: p.id,
       xp,

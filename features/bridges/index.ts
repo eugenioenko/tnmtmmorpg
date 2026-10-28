@@ -107,6 +107,7 @@ function lay(world: WorldAPI, id: number, slot: unknown): void {
   if (slots[slot].count <= 0) slots[slot] = { itemId: '', count: 0 };
   world.update(id, { inventory: { ...inv, slots } });
   world.setTile(target[0], target[1], 'bridge', where);
+  world.emit('bridges:laid', { entityId: id });
 
   const dir = DIRS.find((d) => me.x + STEP[d][0] === target[0] && me.y + STEP[d][1] === target[1]);
   const ahead = dir ? span(world, target[0], target[1], dir, where) : undefined;
