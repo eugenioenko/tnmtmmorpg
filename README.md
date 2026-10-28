@@ -39,7 +39,7 @@ the village get more dangerous the farther you go, and each world beyond the pad
 has its own creatures. Cave mouths in the hills lead to instanced dungeons with a
 guardian and its hoard at the bottom; the first is a short walk north of the village.
 With a pickaxe or hatchet from the trader you can mine ore veins and fell trees, then
-smelt, saw and smith your own gear at the forge and sawbench in the square. Characters are saved on logout and every few seconds while playing.
+smelt, saw and smith your own gear at the forge and sawbench in the square. Saw planks into walkways and you can bridge any lake or river one tile at a time; bridges are permanent and everyone can use them. Characters are saved on logout and every few seconds while playing.
 
 ---
 
