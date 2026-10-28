@@ -227,7 +227,7 @@ export function startCraft(
   let crafting = craftingOf(station);
   if (!crafting) {
     crafting = { activeJobs: [], queue: [] };
-    station.components.crafting = crafting;
+    ctx.world.setComponent(station.id, 'crafting', crafting);
   }
 
   const job: CraftingJob = {

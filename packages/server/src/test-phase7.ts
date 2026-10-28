@@ -150,6 +150,27 @@ function unitTests(): void {
   ids = world.entityIdsInRadius(0, 0, 63);
   assert(!ids.has(b), 'despawned entities are never returned');
 
+  console.log('unit: component index (query)');
+  const indexed = new World(1000, 1000, 42);
+  const api = createWorldApi({
+    world: indexed,
+    bus: new EventBus(),
+    items: new Map(),
+    recipes: new Map(),
+    log: () => {},
+  });
+  const p = indexed.spawn('player', { x: 1, y: 1 }, { player: {}, stats: {} });
+  const q = indexed.spawn('npc', { x: 2, y: 2 }, { npc: {} });
+  const r = indexed.spawn('npc', { x: 3, y: 3 }, { npc: {}, stats: {} });
+  const ids0 = (list: { id: number }[]): string => list.map((e) => e.id).join(',');
+  assert(ids0(indexed.query('npc')) === `${q},${r}`, 'query finds spawned components, in id order');
+  assert(ids0(indexed.query('npc', 'stats')) === `${r}`, 'query needs every named component');
+  assert(indexed.query('nothing').length === 0, 'an unknown component matches nothing');
+  api.update(q, { stats: {} });
+  assert(ids0(indexed.query('stats')) === `${p},${q},${r}`, 'a component added by update() is queryable');
+  indexed.despawn(r);
+  assert(ids0(api.query('npc')) === `${q}`, 'a despawned entity leaves the index');
+
   console.log('unit: spatial delivery (emitNear)');
   const bus = new EventBus();
   const deliveryWorld = new World(1000, 1000, 42);

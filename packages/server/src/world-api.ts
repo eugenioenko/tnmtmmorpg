@@ -93,7 +93,7 @@ export function createWorldApi({ world, bus, log, items, recipes }: WorldApiDeps
       if (!entity) return false;
       for (const [key, value] of Object.entries(patch)) {
         if (PROTECTED_KEYS.has(key)) continue;
-        entity.components[key] = value;
+        world.setComponent(entityId, key, value);
       }
       world.markDirty(entityId);
       return true;
