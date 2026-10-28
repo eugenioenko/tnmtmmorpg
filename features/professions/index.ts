@@ -71,7 +71,6 @@ const TOOL: Record<Skill, { item: string; name: string }> = {
 };
 
 const MAX_LEVEL = 50;
-const SAVE_EVERY = 50;
 
 export const ITEMS: ItemDef[] = [
   { id: 'professions:pickaxe', name: 'Pickaxe', tags: ['tool', 'merchandise'], stack: 1, value: 8, icon: '⛏️', description: 'For working ore veins. Keep it in your pack.' },
@@ -174,8 +173,6 @@ let workSeq = 0;
 const gathering = new Map<number, Gathering>();
 /** Ordinary trees belong to the nature feature, so their felling is tracked here, not on them. */
 const pineRegrow = new Map<number, { charges: number; regrowAt: number }>();
-const tokens = new Map<number, string>();
-const dirty = new Set<number>();
 
 const floor = (n: number): number => n | 0;
 const cheb = (a: { x: number; y: number }, b: { x: number; y: number }): number => {
@@ -274,7 +271,6 @@ function award(world: WorldAPI, me: EntityState, resource: Resource): void {
   const after = skillState(before.xp + resource.xp);
   const next = { ...skills, [resource.skill]: after };
   world.update(me.id, { 'professions:skills': next });
-  dirty.add(me.id);
   if (after.level > before.level) {
     const title = resource.skill === 'mining' ? 'Mining' : 'Woodcutting';
     tell(world, me.id, `${title} level ${after.level}!${unlockNote(resource.skill, after.level)}`, 'level');
@@ -441,35 +437,6 @@ function settle(world: WorldAPI): void {
   }
 }
 
-function save(world: WorldAPI, id: number): void {
-  const token = tokens.get(id);
-  if (!token) return;
-  const skills = skillsOf(world.get(id));
-  world.getSet(`professions:save:${token}`, JSON.stringify({ mining: skills.mining.xp, woodcutting: skills.woodcutting.xp }));
-}
-
-function claim(world: WorldAPI, id: number, args: unknown): void {
-  const token = (args as { token?: unknown } | undefined)?.token;
-  if (typeof token !== 'string' || !/^[a-z0-9]{16,64}$/.test(token)) return;
-  tokens.set(id, token);
-  const raw = world.getSet(`professions:save:${token}`);
-  if (!raw) {
-    world.update(id, { 'professions:skills': freshSkills() });
-    return;
-  }
-  try {
-    const saved = JSON.parse(raw) as { mining?: number; woodcutting?: number };
-    world.update(id, {
-      'professions:skills': {
-        mining: skillState(typeof saved.mining === 'number' ? saved.mining : 0),
-        woodcutting: skillState(typeof saved.woodcutting === 'number' ? saved.woodcutting : 0),
-      } satisfies Skills,
-    });
-  } catch {
-    world.update(id, { 'professions:skills': freshSkills() });
-  }
-}
-
 export default definePlugin({
   id: 'professions',
   items: ITEMS,
@@ -492,11 +459,6 @@ export default definePlugin({
         }
         tickGathering(world);
         if (clock % 50 === 0) regrow(world, 50);
-        if (clock % SAVE_EVERY === 0) {
-          for (const id of dirty) save(world, id);
-          dirty.clear();
-          for (const id of tokens.keys()) if (!world.get(id)) tokens.delete(id);
-        }
       },
     },
   ],
@@ -504,8 +466,9 @@ export default definePlugin({
   commands: [
     { name: 'professions:gather', fn: (world, args, id) => startGathering(world, id, args) },
     { name: 'professions:stop', fn: (world, _args, id) => stop(world, id) },
-    { name: 'professions:claim', fn: (world, args, id) => claim(world, id, args) },
   ],
+
+  persistComponents: ['professions:skills'],
 
   events: {
     'entity:damage': (world, payload) => {

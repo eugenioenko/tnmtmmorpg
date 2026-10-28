@@ -47,6 +47,9 @@ importers:
       '@game/shared':
         specifier: workspace:*
         version: link:../shared
+      oidc-js-react:
+        specifier: 1.1.2
+        version: 1.1.2(react@19.2.8)
       pixi.js:
         specifier: ^8.19.0
         version: 8.19.0
@@ -75,6 +78,9 @@ importers:
       '@game/shared':
         specifier: workspace:*
         version: link:../shared
+      jose:
+        specifier: ^6.2.13
+        version: 6.2.13
       ws:
         specifier: ^8.21.1
         version: 8.21.1
@@ -783,6 +789,7 @@ packages:
   eslint@9.39.5:
     resolution: {integrity: sha512-DgZS62aPLXKlnxILS/AYCoRvHaZeXceIzlXPkkGGzJWSow1aEk0lbTlxUSlyjC8jcaKxAdOnTDz+o1JFSBsyjw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -900,6 +907,9 @@ packages:
   ismobilejs@1.1.1:
     resolution: {integrity: sha512-VaFW53yt8QO61k2WJui0dHf4SlL8lxBofUuUmwBo0ljPk0Drz2TiuDW4jo3wDcv41qy/SxrJ+VAzJ/qYqsmzRw==}
 
+  jose@6.2.13:
+    resolution: {integrity: sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ==}
+
   js-binary-schema-parser@2.0.3:
     resolution: {integrity: sha512-xezGJmOb4lk/M1ZZLTR/jaBHQ4gG/lqQnJqdIv4721DMggsa1bDVlHXNeHYogaIEHD9vCRv0fcL4hMA+Coarkg==}
 
@@ -967,6 +977,17 @@ packages:
   node-releases@2.0.51:
     resolution: {integrity: sha512-wRNIrw4DmVLKQlbgOMdkMx27Wrpzes2hh5Jtbi2bjPd+4wJstWIqP5A+lscnqbm0xxmT5Bpg8Lec5ItEBwx6BQ==}
     engines: {node: '>=18'}
+
+  oidc-js-core@1.1.0:
+    resolution: {integrity: sha512-lLaAFklqeSk5CNIs9NPGkh4i81bTZ6sBNAFRB56/ayVK1P1JPFb5Neaf3GFrYvaYZJnAKbxnKksh7EpadOE7TA==}
+
+  oidc-js-react@1.1.2:
+    resolution: {integrity: sha512-SweYypaj0U2Kip25q9mEWEapltW96bZFoDzyUVsHPGBN63vF5q7NA6tf40j7Zsf6p7z5djDsfMKWN1fJvzkcjQ==}
+    peerDependencies:
+      react: '>=18.0.0'
+
+  oidc-js@1.1.2:
+    resolution: {integrity: sha512-LSDj2ZHmcukcERRB4ON0P276c6ORcLhU5Y6+wUEd/jtGkGdAjinKWZWwR7wu+z4ZkG1ZfRcHgdEThHqG7Ib7Iw==}
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -1937,6 +1958,8 @@ snapshots:
 
   ismobilejs@1.1.1: {}
 
+  jose@6.2.13: {}
+
   js-binary-schema-parser@2.0.3: {}
 
   js-tokens@4.0.0: {}
@@ -1989,6 +2012,18 @@ snapshots:
   natural-compare@1.4.0: {}
 
   node-releases@2.0.51: {}
+
+  oidc-js-core@1.1.0: {}
+
+  oidc-js-react@1.1.2(react@19.2.8):
+    dependencies:
+      oidc-js: 1.1.2
+      oidc-js-core: 1.1.0
+      react: 19.2.8
+
+  oidc-js@1.1.2:
+    dependencies:
+      oidc-js-core: 1.1.0
 
   optionator@0.9.4:
     dependencies:

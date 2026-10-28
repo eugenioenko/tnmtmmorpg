@@ -15,6 +15,8 @@ services:
       PORT: 3010
       WORLD_DB: /app/.data/world.sqlite
       WORLD_SEED: ${WORLD_SEED:-42}
+      # Sign-in. Must match VITE_OIDC_ISSUER_URL in packages/client/.env.production.
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-https://id.skedoodle.top/oauth2}
     volumes:
       # The world. Losing this resets the map and every player's inventory;
       # everything else in the container is disposable.

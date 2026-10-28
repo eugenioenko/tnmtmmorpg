@@ -116,5 +116,54 @@ export interface RecipesMessage {
   recipes: RecipeDef[];
 }
 
-export type ClientMessage = Intent | Ping;
+/**
+ * The first thing a client sends: an OIDC access token when the server runs
+ * with an identity provider, or a browser-local id in development.
+ */
+export interface AuthMessage {
+  t: 'auth';
+  token?: string;
+  dev?: string;
+}
+
+/** A character as the selection screen lists it. */
+export interface CharacterSummary {
+  id: string;
+  name: string;
+  level: number;
+  traits: Record<string, string>;
+  lastPlayed: number;
+}
+
+/** Character management, valid once authenticated and while not in the world. */
+export type CharacterRequest =
+  | { t: 'char:create'; name: string; traits: Record<string, string> }
+  | { t: 'char:delete'; id: string }
+  | { t: 'char:play'; id: string }
+  | { t: 'char:leave' };
+
+/**
+ * The account's characters. Sent after authenticating, after any change to
+ * the roster, and when a character leaves the world.
+ */
+export interface AccountMessage {
+  t: 'account';
+  characters: CharacterSummary[];
+  maxCharacters: number;
+  /** Set when this message answers a request that failed. */
+  error?: string;
+}
+
+/**
+ * The session is over: the token was rejected, or the same character was
+ * opened somewhere else. Clients must not reconnect on their own after
+ * 'replaced', or two tabs would take the character from each other forever.
+ */
+export interface DeniedMessage {
+  t: 'denied';
+  reason: 'auth' | 'replaced';
+  message: string;
+}
+
+export type ClientMessage = Intent | Ping | AuthMessage | CharacterRequest;
 export type ServerMessage = WelcomeMessage | FullSnapshot | DeltaSnapshot | Pong | RecipesMessage;

@@ -772,8 +772,10 @@ async function integrationTests(): Promise<void> {
       ...process.env,
       PORT: String(INTEGRATION_PORT),
       WORLD_DB: INTEGRATION_DB,
+      AUTH: 'off',
     };
     delete env.FEATURES; // integration runs with whatever features the repo has
+    delete env.OIDC_ISSUER_URL;
     const child = spawn(process.execPath, ['src/index.ts'], {
       cwd: serverDir,
       env,
@@ -1084,7 +1086,6 @@ async function integrationTests(): Promise<void> {
       const c = craftingAt(s, station.id);
       return c !== null && c.activeJobs[0]?.progress >= 10;
     }, 'job at 10+ ticks before the restart');
-    const essenceBefore = totalOfEntity(byId(snap, a.entityId), '_example:glowing_essence');
 
     await stopServer(server);
     server = null;
@@ -1107,15 +1108,22 @@ async function integrationTests(): Promise<void> {
       resumed === null || resumed.activeJobs.length === 0 || resumed.activeJobs[0].progress >= 10,
       'no job duplication after the restart (at most one job)',
     );
+    // A's player did not survive the restart (players belong to connections),
+    // so the finished craft lands on the ground by the station instead.
+    const near = (n: number, m: number): boolean => n - m <= 2 && m - n <= 2;
+    const droppedEssence = (s: LocalSnapshot): number =>
+      [...s.entities]
+        .filter((e) => e.kind === 'item' && near(e.x, station.x) && near(e.y, station.y))
+        .map((e) => e.components.itemDrop as { itemId: string; count: number } | undefined)
+        .filter((drop) => drop?.itemId === '_example:glowing_essence')
+        .reduce((sum, drop) => sum + drop!.count, 0);
     await d.waitFor(
-      (s) => totalOfEntity(byId(s, a.entityId), '_example:glowing_essence') === essenceBefore + 1,
-      'restarted job completed and delivered exactly one more essence',
+      (s) => droppedEssence(s) === 1,
+      'restarted job completed and dropped exactly one essence at the station',
     );
     snap = d.latest()!;
-    assert(
-      totalOfEntity(byId(snap, a.entityId), '_example:glowing_essence') === essenceBefore + 1,
-      'exactly +1 essence — the restart duplicated nothing',
-    );
+    assert(byId(snap, a.entityId) === undefined, "A's player was not restored as a ghost");
+    assert(droppedEssence(snap) === 1, 'exactly one essence — the restart duplicated nothing');
 
     // ── the station still works after the restart ──
     d.send({ t: 'intent', kind: '_example:give', item: '_example:stone', count: 3 });

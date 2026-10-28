@@ -577,8 +577,10 @@ async function integrationTests(): Promise<void> {
       ...process.env,
       PORT: String(INTEGRATION_PORT),
       WORLD_DB: INTEGRATION_DB,
+      AUTH: 'off',
     };
     delete env.FEATURES; // integration runs with whatever features the repo has
+    delete env.OIDC_ISSUER_URL;
     const child = spawn(process.execPath, ['src/index.ts'], {
       cwd: serverDir,
       env,

@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS players (
   token TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS characters (
+  id TEXT PRIMARY KEY,
+  account TEXT NOT NULL,
+  name TEXT NOT NULL,
+  name_key TEXT NOT NULL UNIQUE,
+  traits TEXT NOT NULL DEFAULT '{}',
+  level INTEGER NOT NULL DEFAULT 1,
+  state TEXT,
+  created INTEGER NOT NULL,
+  played INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS characters_account ON characters (account);
+
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL

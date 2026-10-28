@@ -1,14 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import type { DatabaseSync } from 'node:sqlite';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   emptySlots,
   encodeServerMessage,
   INVENTORY_CAPACITY,
+  isStatsComponent,
+  OVERWORLD,
   TILE_SIZE,
   VISIBLE_RADIUS_X,
   VISIBLE_RADIUS_Y,
+  type AccountMessage,
+  type DeniedMessage,
   type Intent,
+  type PlayerEnterEvent,
   type Pong,
   type RecipeDef,
   type RecipesMessage,
@@ -18,6 +24,30 @@ import {
 } from '@game/shared';
 import type { World } from './world.ts';
 import { forgetSession } from './snapshot.ts';
+import {
+  cleanName,
+  cleanTraits,
+  createCharacter,
+  deleteCharacter,
+  getCharacter,
+  listCharacters,
+  MAX_CHARACTERS,
+  saveCharacter,
+  type Verify,
+} from './characters.ts';
+
+/**
+ * How a connection proves who it is:
+ * - oidc: an access token from the identity provider (production).
+ * - dev:  a browser-local id, trusted as-is. For local play without an IdP.
+ * - off:  no accounts; every connection spawns a throwaway player at once.
+ *         The integration tests run this way.
+ */
+export type AuthMode = { kind: 'oidc'; verify: Verify } | { kind: 'dev' } | { kind: 'off' };
+
+/** Saved with every character regardless of features: core owns these. */
+const CORE_PERSISTED = ['inventory', 'stats'];
+const SAVE_INTERVAL_MS = 10_000;
 
 export interface WsServer {
   /**
@@ -49,13 +79,23 @@ export interface WsServerOptions {
    * Wired only when profiling is enabled, so unprofiled servers pay nothing.
    */
   onSnapshot?: (msg: ServerMessage, data: string | Uint8Array) => void;
+  db: DatabaseSync;
+  auth: AuthMode;
+  /** Player components that features ask to keep across logouts. */
+  persistComponents: ReadonlySet<string>;
+  /** A character entered the world; core forwards it to features as 'player:enter'. */
+  onEnter: (event: PlayerEnterEvent) => void;
 }
 
 interface Session {
   id: string;
   socket: WebSocket;
-  entityId: number;
+  /** The player entity, while a character is in the world. */
+  entityId?: number;
   color: string;
+  account?: string;
+  authing?: boolean;
+  characterId?: string;
   /**
    * Where this client's camera is looking, in world tiles, or undefined
    * before it reports. Snapshots are centred here rather than on the player:
@@ -168,45 +208,180 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
     process.exit(1);
   });
 
-  wss.on('connection', (socket) => {
-    const id = randomUUID();
-    const color = PLAYER_COLORS[colorIndex++ % PLAYER_COLORS.length];
-    const pos = findSpawn(world);
+  const { db, auth } = options;
+  const persisted = [...CORE_PERSISTED, ...options.persistComponents];
+
+  function send(session: Session, message: unknown): void {
+    if (session.socket.readyState === WebSocket.OPEN) session.socket.send(JSON.stringify(message));
+  }
+
+  function sendAccount(session: Session, error?: string): void {
+    if (!session.account) return;
+    send(session, {
+      t: 'account',
+      characters: listCharacters(db, session.account),
+      maxCharacters: MAX_CHARACTERS,
+      ...(error ? { error } : {}),
+    } satisfies AccountMessage);
+  }
+
+  function spawnPlayer(session: Session, pos: WorldCoord, components: Record<string, unknown>, worldId: string): void {
     // Phase 5: every player spawns with a fixed-size inventory.
     // Phase 7: and with a stats component — hp/atk/def, which the client's
     // health bar reads and feature-side damage rules act on.
-    const entityId = world.spawn('player', pos, {
-      player: { color },
-      inventory: { slots: emptySlots(INVENTORY_CAPACITY), capacity: INVENTORY_CAPACITY },
-      stats: { hp: 100, maxHp: 100, atk: 15, def: 5, level: 1 },
-    });
+    session.entityId = world.spawn(
+      'player',
+      pos,
+      {
+        inventory: { slots: emptySlots(INVENTORY_CAPACITY), capacity: INVENTORY_CAPACITY },
+        stats: { hp: 100, maxHp: 100, atk: 15, def: 5, level: 1 },
+        ...components,
+        player: { color: session.color },
+      },
+      worldId,
+    );
+    send(session, {
+      t: 'welcome',
+      entityId: session.entityId,
+      color: session.color,
+      // The server decides how much world it sends; the client caps its
+      // canvas to this so it never renders ground it was not given.
+      // The DISPLAYABLE radius, not the send radius: the server sends a
+      // wider window so the camera has somewhere to pan into, but the
+      // client must only render this much (equal view for every monitor).
+      viewRadiusX: VISIBLE_RADIUS_X,
+      viewRadiusY: VISIBLE_RADIUS_Y,
+      tileSize: TILE_SIZE,
+    } satisfies WelcomeMessage);
+    // Phase 6: recipes are immutable at runtime, so one push per entry is
+    // enough — the client renders the recipe browser from this registry.
+    send(session, { t: 'recipes', recipes: options.recipes } satisfies RecipesMessage);
+  }
 
-    const session: Session = { id, socket, entityId, color, useBinary: false };
+  /** Write the character's persisted components and position back to its row. */
+  function save(session: Session): void {
+    if (!session.characterId || session.entityId === undefined) return;
+    const e = world.get(session.entityId);
+    if (!e) return;
+    const components: Record<string, unknown> = {};
+    for (const name of persisted) if (name in e.components) components[name] = e.components[name];
+    const stats = e.components.stats;
+    const level = isStatsComponent(stats) ? stats.level : 1;
+    saveCharacter(db, session.characterId, level, { x: e.x, y: e.y, world: e.world, components });
+  }
+
+  /** Save and remove the character from the world; the session stays connected. */
+  function leave(session: Session): void {
+    if (session.entityId === undefined) return;
+    save(session);
+    world.despawn(session.entityId);
+    forgetSession(session.id);
+    console.log(`[ws] session ${session.id} left the world - despawned entity ${session.entityId}`);
+    session.entityId = undefined;
+    session.characterId = undefined;
+    session.viewX = undefined;
+    session.viewY = undefined;
+  }
+
+  function play(session: Session, characterId: unknown): void {
+    if (!session.account || typeof characterId !== 'string') return;
+    const row = getCharacter(db, characterId);
+    if (!row || row.account !== session.account) return sendAccount(session, 'That character is not yours.');
+    for (const other of sessions.values()) {
+      if (other !== session && other.characterId === row.id) {
+        leave(other);
+        send(other, {
+          t: 'denied',
+          reason: 'replaced',
+          message: `${row.name} was opened somewhere else.`,
+        } satisfies DeniedMessage);
+        other.socket.close(4001, 'replaced');
+      }
+    }
+    leave(session);
+    const state = row.state;
+    const restore =
+      state && state.world === OVERWORLD && world.isWalkable(state.x, state.y)
+        ? { x: state.x, y: state.y }
+        : findSpawn(world);
+    session.characterId = row.id;
+    spawnPlayer(session, restore, state?.components ?? {}, OVERWORLD);
+    options.onEnter({
+      entityId: session.entityId!,
+      name: row.name,
+      created: state === undefined,
+      traits: row.traits,
+    });
+    save(session);
+    console.log(`[ws] session ${session.id} entered as ${row.name} (entity ${session.entityId})`);
+  }
+
+  async function authenticate(session: Session, message: Record<string, unknown>): Promise<void> {
+    if (session.account || session.authing) return;
+    session.authing = true;
+    try {
+      if (auth.kind === 'oidc') {
+        if (typeof message.token !== 'string') throw new Error('no token');
+        session.account = await auth.verify(message.token);
+      } else if (typeof message.dev === 'string' && /^[a-z0-9-]{8,64}$/.test(message.dev)) {
+        session.account = `dev:${message.dev}`;
+      } else {
+        throw new Error('no dev id');
+      }
+    } catch (err) {
+      console.warn(`[ws] session ${session.id} failed to authenticate: ${err instanceof Error ? err.message : String(err)}`);
+      send(session, { t: 'denied', reason: 'auth', message: 'Your sign-in was not accepted.' } satisfies DeniedMessage);
+      session.socket.close(4000, 'auth');
+      return;
+    } finally {
+      session.authing = false;
+    }
+    console.log(`[ws] session ${session.id} authenticated as ${session.account}`);
+    sendAccount(session);
+  }
+
+  function handleAccount(session: Session, message: Record<string, unknown>): void {
+    if (!session.account) return;
+    switch (message.t) {
+      case 'char:create': {
+        if (session.entityId !== undefined) return;
+        const name = cleanName(message.name);
+        if (!name) return sendAccount(session, 'Names are 3 to 16 letters; spaces, hyphens and apostrophes are fine inside.');
+        const result = createCharacter(db, session.account, name, cleanTraits(message.traits));
+        return sendAccount(session, result.ok ? undefined : result.error);
+      }
+      case 'char:delete':
+        if (session.entityId !== undefined || typeof message.id !== 'string') return;
+        if ([...sessions.values()].some((s) => s.characterId === message.id)) {
+          return sendAccount(session, 'That character is in the world right now.');
+        }
+        deleteCharacter(db, session.account, message.id);
+        return sendAccount(session);
+      case 'char:play':
+        return play(session, message.id);
+      case 'char:leave':
+        leave(session);
+        return sendAccount(session);
+    }
+  }
+
+  const autosave = setInterval(() => {
+    for (const session of sessions.values()) save(session);
+  }, SAVE_INTERVAL_MS);
+
+  wss.on('connection', (socket) => {
+    const id = randomUUID();
+    const color = PLAYER_COLORS[colorIndex++ % PLAYER_COLORS.length];
+    const session: Session = { id, socket, color, useBinary: false };
     sessions.set(session.id, session);
 
-    session.socket.send(
-      JSON.stringify({
-        t: 'welcome',
-        entityId: session.entityId,
-        color: session.color,
-        // The server decides how much world it sends; the client caps its
-        // canvas to this so it never renders ground it was not given.
-        // The DISPLAYABLE radius, not the send radius: the server sends a
-        // wider window so the camera has somewhere to pan into, but the
-        // client must only render this much (equal view for every monitor).
-        viewRadiusX: VISIBLE_RADIUS_X,
-        viewRadiusY: VISIBLE_RADIUS_Y,
-        tileSize: TILE_SIZE,
-      } satisfies WelcomeMessage),
-    );
-    // Phase 6: recipes are immutable at runtime, so one push per connect is
-    // enough — the client renders the recipe browser from this registry.
-    session.socket.send(
-      JSON.stringify({ t: 'recipes', recipes: options.recipes } satisfies RecipesMessage),
-    );
-    console.log(
-      `[ws] session ${session.id} connected as entity ${session.entityId} at (${pos.x}, ${pos.y})`,
-    );
+    if (auth.kind === 'off') {
+      const pos = findSpawn(world);
+      spawnPlayer(session, pos, {}, OVERWORLD);
+      console.log(`[ws] session ${session.id} connected as entity ${session.entityId} at (${pos.x}, ${pos.y})`);
+    } else {
+      console.log(`[ws] session ${session.id} connected - waiting for sign-in`);
+    }
 
     session.socket.on('message', (data) => {
       let message: unknown;
@@ -215,6 +390,17 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
       } catch {
         console.warn(`[ws] session ${session.id} sent non-JSON data - dropped`);
         return;
+      }
+      if (typeof message === 'object' && message !== null) {
+        const msg = message as Record<string, unknown>;
+        if (msg.t === 'auth') {
+          if (auth.kind !== 'off') void authenticate(session, msg);
+          return;
+        }
+        if (typeof msg.t === 'string' && msg.t.startsWith('char:')) {
+          handleAccount(session, msg);
+          return;
+        }
       }
       // Camera position. Clamped server-side in snapshot.ts, so a forged
       // value cannot scout the map — it is a hint, not an instruction.
@@ -243,15 +429,14 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
         console.warn(`[ws] session ${session.id} sent an invalid message - dropped`);
         return;
       }
-      options.enqueueIntent(session.entityId, message);
+      if (session.entityId !== undefined) options.enqueueIntent(session.entityId, message);
     });
 
     session.socket.on('close', () => {
-      world.despawn(session.entityId);
+      // Drops the session's snapshot diff state too, so a reconnect starts fresh.
+      leave(session);
       sessions.delete(session.id);
-      // Drop the session's snapshot diff state so a reconnect starts fresh.
-      forgetSession(session.id);
-      console.log(`[ws] session ${session.id} disconnected - despawned entity ${session.entityId}`);
+      console.log(`[ws] session ${session.id} disconnected`);
     });
 
     session.socket.on('error', (err) => {
@@ -272,7 +457,7 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
       ) => ServerMessage,
     ): void {
       for (const session of sessions.values()) {
-        if (session.socket.readyState !== WebSocket.OPEN) continue;
+        if (session.entityId === undefined || session.socket.readyState !== WebSocket.OPEN) continue;
         try {
           // Binary sessions get the compact wire format (~1/4 the size);
           // everyone else keeps JSON. Encoding can throw (a value outgrew
@@ -301,7 +486,9 @@ export function startWsServer(world: World, options: WsServerOptions): WsServer 
       return sessions.size;
     },
     close(): void {
+      clearInterval(autosave);
       for (const session of sessions.values()) {
+        leave(session);
         session.socket.close();
       }
       wss.close();
