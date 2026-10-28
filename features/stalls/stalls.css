@@ -1,0 +1,68 @@
+.stalls { width: 360px; display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; padding-right: 4px; }
+
+.stall-banner { font-size: 14px; color: var(--gold-hi); }
+
+.stall-sign { display: flex; }
+
+.stall-name {
+  flex: 1;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--gold-hi);
+  font: 700 14px var(--font-title);
+}
+
+.stall-till { display: flex; align-items: center; justify-content: space-between; color: var(--loot); }
+
+.stall-good {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  background: linear-gradient(180deg, rgba(232, 214, 170, 0.06), rgba(0, 0, 0, 0.2));
+}
+
+.stall-icon { font-size: 20px; width: 26px; text-align: center; }
+.stall-good-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stall-price { color: var(--loot); font-weight: 700; }
+
+.stall-num {
+  width: 52px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-edge);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--ink);
+  font: inherit;
+}
+
+.stall-pack { display: flex; flex-wrap: wrap; gap: 3px; }
+
+.stall-slot {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  font-size: 19px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid #000;
+  background: radial-gradient(circle at 50% 40%, #33271b, #130e09);
+  box-shadow: inset 0 0 0 1px rgba(232, 191, 98, 0.16);
+  cursor: pointer;
+}
+
+.stall-slot:hover { box-shadow: inset 0 0 0 1px var(--gold); }
+.stall-slot.on { box-shadow: inset 0 0 0 2px var(--gold-hi), 0 0 8px rgba(255, 210, 110, 0.5); }
+.stall-slot-n { position: absolute; right: 2px; bottom: 1px; font: 700 10px/1 var(--font-body); color: #fff; text-shadow: 0 1px 2px #000; }
+
+.stall-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.stall-what { flex: 1 1 100%; font-weight: 600; }
+.stall-form label { display: flex; align-items: center; gap: 4px; color: var(--ink-dim); }
+.stall-form .btn { margin-left: auto; }
+
+.stall-foot { display: flex; justify-content: flex-end; margin-top: 4px; }
+.stall-gold { font-size: 12px; text-align: right; }

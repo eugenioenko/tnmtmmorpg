@@ -323,6 +323,8 @@ export interface ClientWindow {
   component: unknown;
   /** Lower sorts first on the action bar. */
   order?: number;
+  /** False keeps it off the action bar; it opens from an interaction's `opens` or its hotkey. */
+  onBar?: boolean;
 }
 
 /**
