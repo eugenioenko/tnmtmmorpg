@@ -97,6 +97,15 @@ export class World {
    * into another world at the same coordinates.
    */
   private readonly entityChunks = new Map<string, Set<number>>();
+  /**
+   * Component index: component name -> ids of the entities carrying it.
+   * query() runs from every feature system every tick, and a full scan made
+   * its cost grow with the whole world (scenery included) rather than with
+   * what it asks for. Components are only ever added while an entity lives,
+   * so an id leaves these sets only on despawn. Writes must go through
+   * spawn() or setComponent() or the index goes stale.
+   */
+  private readonly byComponent = new Map<string, Set<number>>();
   private nextId = 1;
   private rngState: number;
   /** The persistence handle (for kv flags); undefined in db-less test worlds. */
@@ -209,6 +218,7 @@ export class World {
   ): number {
     const id = this.nextId++;
     this.entities.set(id, { id, kind, x: pos.x, y: pos.y, components, world, chunk: '' });
+    this.indexComponents(id, components);
     this.updateEntityChunk(id, pos.x, pos.y);
     this.dirty.add(id);
     return id;
@@ -218,11 +228,38 @@ export class World {
     return this.entities.get(id);
   }
 
-  /** All entities that carry every named component. */
+  /** All entities that carry every named component, in id order. */
   query(...componentNames: string[]): Entity[] {
-    return [...this.entities.values()].filter((e) =>
-      componentNames.every((name) => name in e.components),
-    );
+    if (componentNames.length === 0) return this.all();
+    let smallest: Set<number> | undefined;
+    for (const name of componentNames) {
+      const ids = this.byComponent.get(name);
+      if (!ids) return [];
+      if (!smallest || ids.size < smallest.size) smallest = ids;
+    }
+    const out: Entity[] = [];
+    for (const id of [...smallest!].sort((a, b) => a - b)) {
+      const e = this.entities.get(id);
+      if (e && componentNames.every((name) => name in e.components)) out.push(e);
+    }
+    return out;
+  }
+
+  /** Set one component on a live entity, keeping the component index in step. */
+  setComponent(id: number, name: string, value: unknown): boolean {
+    const entity = this.entities.get(id);
+    if (!entity) return false;
+    entity.components[name] = value;
+    this.indexComponents(id, { [name]: value });
+    return true;
+  }
+
+  private indexComponents(id: number, components: Record<string, unknown>): void {
+    for (const name of Object.keys(components)) {
+      const ids = this.byComponent.get(name);
+      if (ids) ids.add(id);
+      else this.byComponent.set(name, new Set([id]));
+    }
   }
 
   /** Every entity, in insertion order. */
@@ -289,6 +326,7 @@ export class World {
         set.delete(id);
         if (set.size === 0) this.entityChunks.delete(entity.chunk);
       }
+      for (const name of Object.keys(entity.components)) this.byComponent.get(name)?.delete(id);
     }
     this.entities.delete(id);
     this.dirty.add(id);
@@ -541,6 +579,7 @@ export class World {
         world,
         chunk: '',
       });
+      this.indexComponents(row.id, parsed.components as Record<string, unknown>);
       this.updateEntityChunk(row.id, parsed.x, parsed.y);
       if (row.id >= this.nextId) this.nextId = row.id + 1;
     }
