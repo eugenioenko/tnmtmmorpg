@@ -12,7 +12,7 @@ import { definePlugin, type EntityState, type WorldAPI } from '@game/shared';
  *   /roll [max]       a public dice roll
  *   /who              who is online
  *
- * Other features add their own commands (and the 'party' channel's lines)
+ * Other features add their own commands (and the 'party' and 'guild' channels' lines)
  * through 'chat:register-commands', emitted once on the first tick:
  *
  *   { register(names, help, fn(world, me, rest)), deliver(world, toId, line) }
@@ -24,7 +24,7 @@ import { definePlugin, type EntityState, type WorldAPI } from '@game/shared';
 
 export interface ChatLine {
   n: number;
-  ch: 'say' | 'yell' | 'world' | 'party' | 'whisper-in' | 'whisper-out' | 'emote' | 'system';
+  ch: 'say' | 'yell' | 'world' | 'party' | 'guild' | 'whisper-in' | 'whisper-out' | 'emote' | 'system';
   from?: string;
   fromId?: number;
   text: string;

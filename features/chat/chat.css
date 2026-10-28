@@ -55,6 +55,7 @@
 .chat-bar.ch-yell .chat-channel { color: #ff8a6a; }
 .chat-bar.ch-world .chat-channel { color: #ffc685; }
 .chat-bar.ch-party .chat-channel { color: #8fd3ff; }
+.chat-bar.ch-guild .chat-channel { color: #7fe0a0; }
 
 .chat-input {
   flex: 1;
@@ -70,6 +71,7 @@
 
 .chat-bar.ch-world .chat-input { color: #ffd7a8; }
 .chat-bar.ch-party .chat-input { color: #b8e3ff; }
+.chat-bar.ch-guild .chat-input { color: #b4f0c8; }
 
 .log-line.party { color: #8fd3ff; }
 .log-line.party .speaker { color: #b8e3ff; }
