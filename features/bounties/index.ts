@@ -225,6 +225,7 @@ function deliver(world: WorldAPI, id: number, args: Record<string, unknown>): vo
     reason: `You deliver ${what} for ${b.by}: +${gold} gold${xp > 0 ? `, +${xp} XP` : ''}.${filled ? ' Bounty filled!' : ''}`,
     tone: 'good',
   });
+  world.emit('bounties:delivered', { entityId: id, count: n });
   if (!b.town) {
     const poster = world.query('player').find((p) => nameOf(p) === b.by);
     if (poster) say(world, poster.id, `📜 ${name} delivered ${what} to your bounty. Collect it at the board.`, 'good');

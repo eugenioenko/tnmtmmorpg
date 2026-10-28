@@ -218,6 +218,7 @@ function collect(world: WorldAPI, id: number, a: Record<string, unknown>): void 
   const at = own(world, id, a.stallId);
   if (!at || at.stall.till <= 0) return;
   world.emit('character:grant', { entityId: id, gold: at.stall.till, reason: `You empty the till: +${at.stall.till} gold.`, tone: 'good' });
+  world.emit('stalls:takings', { entityId: id, gold: at.stall.till });
   save(world, at.e, { ...at.stall, till: 0 });
 }
 
@@ -235,7 +236,10 @@ function packUp(world: WorldAPI, id: number, a: Record<string, unknown>): void {
       world.spawn('item', { x: at.me.x, y: at.me.y }, { itemDrop: { itemId: g.itemId, count: left } }, at.me.world);
     }
   }
-  if (at.stall.till > 0) world.emit('character:grant', { entityId: id, gold: at.stall.till });
+  if (at.stall.till > 0) {
+    world.emit('character:grant', { entityId: id, gold: at.stall.till });
+    world.emit('stalls:takings', { entityId: id, gold: at.stall.till });
+  }
   world.despawn(at.e.id);
   say(world, id, `You pack up your stall${at.stall.till > 0 ? ` and pocket ${at.stall.till} gold` : ''}.${spilled ? ' Some goods did not fit and lie at your feet.' : ''}`, 'good');
 }

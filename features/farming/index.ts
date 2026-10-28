@@ -265,6 +265,7 @@ function harvest(world: WorldAPI, id: number, target: EntityState): void {
     reason: `Harvested ${got} ${crop.name.toLowerCase()} and ${seeds} seed${seeds > 1 ? 's' : ''} · +${crop.xp} XP`,
     tone: 'loot',
   });
+  world.emit('farming:harvested', { entityId: id, crop: plot.crop });
   const fresh: PlotComponent = { owner: plot.owner, tilled: now, was: plot.was };
   write(world, target.id, fresh);
 }
