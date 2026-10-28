@@ -460,7 +460,7 @@ export default definePlugin({
         gold,
         reason: `${name} defeated · +${xp} XP${loot ? ` · ${loot}` : ''}`,
       });
-      world.emit('bestiary:slain', { killerId: killer.id, species: species.id, name, world: ev.world });
+      world.emit('bestiary:slain', { killerId: killer.id, species: species.id, name, world: ev.world, x: ev.x, y: ev.y, xp });
     },
   },
 });

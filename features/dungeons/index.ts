@@ -15,7 +15,7 @@ import {
 /**
  * Caves: instanced dungeons behind entrances scattered across the
  * overworld. Stepping in puts you (and anyone who follows within half a
- * minute) in your own copy of the cave: a chain of chambers full of
+ * minute, or any time if they share your party) in your own copy of the cave: a chain of chambers full of
  * monsters, ending in a guardian. Felling the guardian opens its hoard,
  * which each player who made it can loot once per run.
  *
@@ -288,6 +288,12 @@ function guardianOf(x: number, y: number): readonly [string, string] {
   return GUARDIANS[hash(x, y) % GUARDIANS.length];
 }
 
+/** The party feature's public tag, if it is installed and the player is in one. */
+function partyIdOf(e: EntityState | undefined): number | undefined {
+  const tag = e?.components['party:tag'] as { id?: unknown } | undefined;
+  return typeof tag?.id === 'number' ? tag.id : undefined;
+}
+
 function freeCopy(caveX: number, caveY: number): number | undefined {
   for (let copy = 0; copy < COPIES; copy++) {
     if (!instances.has(dungeonWorldId(caveX, caveY, copy))) return copy;
@@ -319,8 +325,12 @@ function enter(world: WorldAPI, playerId: number, args: unknown): void {
   if ((me.world ?? OVERWORLD) !== (cave.world ?? OVERWORLD) || cheb(me, cave) > 2) return;
 
   const mine = [...instances.values()].filter((i) => i.caveId === cave.id);
+  const party = partyIdOf(me);
   let inst =
     mine.find((i) => i.members.has(playerId)) ??
+    (party === undefined
+      ? undefined
+      : mine.find((i) => [...i.members].some((id) => partyIdOf(world.get(id)) === party))) ??
     mine.find((i) => !i.cleared && clock - i.created <= JOIN_WINDOW);
   if (!inst) {
     const copy = freeCopy(cave.x, cave.y);

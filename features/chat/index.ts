@@ -12,6 +12,11 @@ import { definePlugin, type EntityState, type WorldAPI } from '@game/shared';
  *   /roll [max]       a public dice roll
  *   /who              who is online
  *
+ * Other features add their own commands (and the 'party' channel's lines)
+ * through 'chat:register-commands', emitted once on the first tick:
+ *
+ *   { register(names, help, fn(world, me, rest)), deliver(world, toId, line) }
+ *
  * Delivery: each player's `chat:inbox` (private: only its owner's
  * connection receives it) holds the last few lines, numbered so the client
  * shows each once. Speech is mirrored on the speaker's public `chat:bubble`.
@@ -19,7 +24,7 @@ import { definePlugin, type EntityState, type WorldAPI } from '@game/shared';
 
 export interface ChatLine {
   n: number;
-  ch: 'say' | 'yell' | 'world' | 'whisper-in' | 'whisper-out' | 'emote' | 'system';
+  ch: 'say' | 'yell' | 'world' | 'party' | 'whisper-in' | 'whisper-out' | 'emote' | 'system';
   from?: string;
   fromId?: number;
   text: string;
@@ -70,7 +75,11 @@ const HELP = [
   `/me text · /roll · /who · emotes: ${Object.keys(EMOTES).map((e) => `/${e}`).join(' ')}`,
 ];
 
+type ExtraCommand = (world: WorldAPI, me: EntityState, rest: string) => void;
+
 let clock = 0;
+const extra = new Map<string, ExtraCommand>();
+const extraHelp: string[] = [];
 const sent = new Map<number, number[]>();
 const lastWhisperFrom = new Map<number, number>();
 
@@ -273,8 +282,14 @@ function handle(world: WorldAPI, me: EntityState, raw: string): void {
       return;
     case 'help':
     case '?':
-      for (const line of HELP) system(world, world.get(me.id) ?? me, line);
+      for (const line of [...HELP, ...extraHelp]) system(world, world.get(me.id) ?? me, line);
       return;
+  }
+
+  const added = extra.get(cmd);
+  if (added) {
+    added(world, me, rest);
+    return;
   }
 
   const forms = EMOTES[cmd];
@@ -314,6 +329,23 @@ export default definePlugin({
       name: 'chat:tick',
       fn: (world) => {
         clock++;
+        if (clock === 1) {
+          world.emit('chat:register-commands', {
+            register: (names: unknown, help: unknown, fn: unknown) => {
+              if (!Array.isArray(names) || typeof fn !== 'function') return;
+              for (const name of names) {
+                if (typeof name === 'string' && !extra.has(name.toLowerCase())) {
+                  extra.set(name.toLowerCase(), fn as ExtraCommand);
+                }
+              }
+              if (typeof help === 'string' && help) extraHelp.push(help);
+            },
+            deliver: (w: WorldAPI, toId: number, line: Omit<ChatLine, 'n' | 't'>) => {
+              const to = w.get(toId);
+              if (to) deliver(w, to, { ...line, text: clean(line.text) });
+            },
+          });
+        }
         if (clock % 10 !== 0) return;
         for (const e of world.query('chat:bubble')) {
           const b = e.components['chat:bubble'] as Bubble | undefined;
