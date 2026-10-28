@@ -30,6 +30,8 @@ export const TILE_VOID = 8;
 export const TILE_FLOOR = 9;
 /** Interior: the wall enclosing a room. Blocks movement. */
 export const TILE_WALL = 10;
+/** Built over water by players: walkable planks, drawn over the water beneath. */
+export const TILE_BRIDGE = 11;
 
 // Byte → string for wire protocol (the binary decoder's table)
 export const TILE_KIND_BYTE: Record<number, string> = {
@@ -44,6 +46,7 @@ export const TILE_KIND_BYTE: Record<number, string> = {
   [TILE_VOID]: 'void',
   [TILE_FLOOR]: 'floor',
   [TILE_WALL]: 'wall',
+  [TILE_BRIDGE]: 'bridge',
 };
 
 // Byte → string, same table; kept under the historical name so the binary
@@ -63,6 +66,7 @@ export const TILE_BYTE_BY_KIND: Record<string, number> = {
   void: TILE_VOID,
   floor: TILE_FLOOR,
   wall: TILE_WALL,
+  bridge: TILE_BRIDGE,
 };
 
 // Which tiles you can walk on (water and mountain block movement)
@@ -74,6 +78,7 @@ export const WALKABLE_TILES: Set<number> = new Set([
   TILE_SNOW,
   TILE_SWAMP,
   TILE_FLOOR,
+  TILE_BRIDGE,
 ]);
 
 // Client colors
@@ -89,6 +94,7 @@ export const TILE_COLORS: Record<number, number> = {
   [TILE_VOID]: 0x000000,
   [TILE_FLOOR]: 0x6b5a48,
   [TILE_WALL]: 0x3b3129,
+  [TILE_BRIDGE]: 0x9a6a3a,
 };
 
 // Human-readable names for debug/logging
@@ -104,6 +110,7 @@ export const TILE_NAMES: Record<number, string> = {
   [TILE_VOID]: 'void',
   [TILE_FLOOR]: 'floor',
   [TILE_WALL]: 'wall',
+  [TILE_BRIDGE]: 'bridge',
 };
 
 // ── Viewport: the single source of truth for how much world a client sees ──

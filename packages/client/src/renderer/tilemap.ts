@@ -6,6 +6,7 @@ import {
   TILE_FLOOR,
   TILE_GRASS,
   TILE_MOUNTAIN,
+  TILE_BRIDGE,
   TILE_SIZE,
   TILE_VOID,
   TILE_WALL,
@@ -204,6 +205,15 @@ export class TilemapRenderer {
         const ox = x * TILE_SIZE;
         const oy = y * TILE_SIZE;
 
+        if (byte === TILE_BRIDGE) {
+          this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(1, ox, oy));
+          const wet = (b: number): boolean => b === 1;
+          const northSouth = !wet(grid(x, y - 1)) || !wet(grid(x, y + 1));
+          const eastWest = !wet(grid(x - 1, y)) || !wet(grid(x + 1, y));
+          drawPlanks(this.layer, ox, oy, northSouth && !eastWest);
+          continue;
+        }
+
         // The tile's full square, then the diagonal edge cuts.
         this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(byte, ox, oy));
 
@@ -230,5 +240,26 @@ export class TilemapRenderer {
         }
       }
     }
+  }
+}
+
+const PLANK = [0xa8743f, 0x94653a, 0x9e6c3c, 0x8c5f35];
+
+/**
+ * Four boards across the direction of travel with a rail on each side.
+ * `northSouth` is a walkway running up and down the screen.
+ */
+function drawPlanks(layer: Graphics, ox: number, oy: number, northSouth: boolean): void {
+  const board = TILE_SIZE / 4;
+  for (let i = 0; i < 4; i++) {
+    if (northSouth) layer.rect(ox + 2, oy + i * board, TILE_SIZE - 4, board - 1).fill(PLANK[i]);
+    else layer.rect(ox + i * board, oy + 2, board - 1, TILE_SIZE - 4).fill(PLANK[i]);
+  }
+  if (northSouth) {
+    layer.rect(ox, oy, 3, TILE_SIZE).fill(0x5a3a1e);
+    layer.rect(ox + TILE_SIZE - 3, oy, 3, TILE_SIZE).fill(0x5a3a1e);
+  } else {
+    layer.rect(ox, oy, TILE_SIZE, 3).fill(0x5a3a1e);
+    layer.rect(ox, oy + TILE_SIZE - 3, TILE_SIZE, 3).fill(0x5a3a1e);
   }
 }
