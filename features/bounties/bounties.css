@@ -1,0 +1,72 @@
+.bounties { display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; padding-right: 4px; }
+
+.bounty-away {
+  font-size: 12px;
+  color: var(--quest);
+  border: 1px dashed var(--gold-lo);
+  border-radius: 5px;
+  padding: 5px 8px;
+}
+
+.bounty {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-edge);
+  background: linear-gradient(180deg, rgba(232, 214, 170, 0.08), rgba(0, 0, 0, 0.2));
+}
+
+.bounty.town { border-color: var(--gold-lo); }
+.bounty.mine { border-color: #4e7aa0; }
+.bounty.filled { opacity: 0.75; }
+
+.bounty-icon { font-size: 24px; width: 30px; text-align: center; line-height: 30px; }
+.bounty-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.bounty-head { display: flex; align-items: baseline; gap: 6px; }
+.bounty-item { font-weight: 700; color: var(--ink); }
+.bounty-count { font-size: 11px; color: var(--ink-dim); }
+.bounty-pay { margin-left: auto; font-size: 12px; color: var(--loot); white-space: nowrap; }
+
+.bounty-track { height: 4px; border-radius: 2px; background: rgba(0, 0, 0, 0.5); overflow: hidden; }
+.bounty-fill { height: 100%; background: linear-gradient(90deg, var(--gold-lo), var(--gold-hi)); }
+
+.bounty-foot { display: flex; align-items: center; gap: 6px; font-size: 11px; min-height: 22px; }
+.bounty-foot > .btn, .bounty-actions { margin-left: auto; }
+.bounty-actions { display: flex; gap: 4px; }
+
+.bounty-post { display: flex; flex-direction: column; gap: 6px; }
+
+.bounty-picker { display: flex; flex-wrap: wrap; gap: 3px; }
+
+.bounty-pick {
+  width: 30px;
+  height: 30px;
+  font-size: 18px;
+  border-radius: 5px;
+  border: 1px solid #000;
+  background: radial-gradient(circle at 50% 40%, #33271b, #130e09);
+  box-shadow: inset 0 0 0 1px rgba(232, 191, 98, 0.16);
+  cursor: pointer;
+  padding: 0;
+}
+
+.bounty-pick:hover { box-shadow: inset 0 0 0 1px var(--gold); }
+.bounty-pick.on { box-shadow: inset 0 0 0 2px var(--gold-hi), 0 0 8px rgba(255, 210, 110, 0.5); }
+
+.bounty-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.bounty-what { flex: 1 1 100%; font-weight: 600; color: var(--ink); }
+.bounty-form label { display: flex; align-items: center; gap: 4px; color: var(--ink-dim); }
+
+.bounty-form input {
+  width: 46px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-edge);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--ink);
+  font: inherit;
+}
+
+.bounty-form .btn { margin-left: auto; }
