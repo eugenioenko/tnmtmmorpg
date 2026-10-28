@@ -10,7 +10,7 @@
     "dev": "node --watch --watch-path=../../features src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node src/test-phase5.ts && node src/test-phase6.ts && node src/test-phase7.ts && node src/test-binary.ts && node src/test-decorate.ts"
+    "test": "node src/test-phase5.ts && node src/test-phase6.ts && node src/test-phase7.ts && node src/test-binary.ts && node src/test-decorate.ts && node src/test-private.ts"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

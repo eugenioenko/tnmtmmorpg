@@ -1,17 +1,18 @@
 import { useEffect, useReducer } from 'react';
-import type { ClientAPI, ClientWindow, EntityState, Intent } from '@game/shared';
+import type { ClientAPI, ClientWindow, EntityState, Intent, LogTone } from '@game/shared';
 import type { Game } from '../game.ts';
 import { emojiForItem } from '../emoji-atlas.ts';
 import { getItemDef } from '../items.ts';
 import type { Controls } from '../controls.ts';
 
-export type Tone = 'info' | 'good' | 'bad' | 'loot' | 'quest' | 'level';
+export type Tone = LogTone;
 
 export interface LogLine {
   id: number;
   text: string;
   tone: Tone;
   at: number;
+  speaker?: string;
 }
 
 export interface Banner {
@@ -48,6 +49,7 @@ export class HudRuntime {
     this.client = {
       localPlayer: () => game.localPlayer(),
       entity: (id) => game.entity(id),
+      entities: () => game.entities(),
       itemDef: (id) => getItemDef(id),
       itemIcon: (id) => emojiForItem(id, getItemDef(id)?.tags),
       subscribe: (listener) => {
@@ -55,17 +57,26 @@ export class HudRuntime {
         return () => this.listeners.delete(listener);
       },
       sendIntent: (intent) => sendIntent(intent as Intent),
-      notify: (text, tone) => this.notify(text, tone ?? 'info'),
+      notify: (text, tone, speaker) => this.notify(text, tone ?? 'info', speaker),
+      screenOf: (id) => game.screenOf(id),
       toggleWindow: (id, open) => this.toggle(id, open),
       banner: (text, sub, kind) => this.showBanner(text, kind ?? 'info', sub),
     };
   }
 
-  notify(text: string, tone: Tone = 'info'): void {
+  notify(text: string, tone: Tone = 'info', speaker?: string): void {
     const last = this.log[this.log.length - 1];
-    if (last && last.text === text && performance.now() - last.at < 1500) return;
-    this.log.push({ id: ++this.seq, text, tone, at: performance.now() });
-    if (this.log.length > 60) this.log.shift();
+    if (
+      !speaker &&
+      last &&
+      last.text === text &&
+      !last.speaker &&
+      performance.now() - last.at < 1500
+    ) {
+      return;
+    }
+    this.log.push({ id: ++this.seq, text, tone, at: performance.now(), speaker });
+    if (this.log.length > 100) this.log.shift();
     this.changed();
   }
 

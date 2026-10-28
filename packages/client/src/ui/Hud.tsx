@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+} from 'react';
 import type { EntityState, InventoryComponent, StatsComponent } from '@game/shared';
 import { isStatsComponent, resolveWorld } from '@game/shared';
 import { portraitFrame, type PortraitFrame } from '../art.ts';
@@ -229,12 +236,26 @@ function Minimap({ rt }: { rt: HudRuntime }) {
 function MessageLog({ rt }: { rt: HudRuntime }) {
   useHudState(rt);
   useFrame(1000);
+  const ref = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
   const now = performance.now();
-  const lines = rt.log.slice(-9);
+  const newest = rt.log[rt.log.length - 1]?.id;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [newest]);
   return (
-    <div className="log">
-      {lines.map((line) => (
+    <div
+      ref={ref}
+      className="log"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+      }}
+    >
+      {rt.log.map((line) => (
         <div key={line.id} className={`log-line ${line.tone}${now - line.at > 20000 ? ' old' : ''}`}>
+          {line.speaker && <span className="speaker">{line.speaker}</span>}
           {line.text}
         </div>
       ))}
@@ -458,17 +479,24 @@ function DebugDrawer({ rt, devPanels }: { rt: HudRuntime; devPanels: Record<stri
   );
 }
 
+type Widget = (props: { client: HudRuntime['client'] }) => ReactElement | null;
+
 export function HudChrome({
   rt,
   devPanels,
   hudWidgets,
+  overlays,
 }: {
   rt: HudRuntime;
   devPanels: Record<string, DevPanel>;
-  hudWidgets: Record<string, (props: { client: HudRuntime['client'] }) => ReactElement | null>;
+  hudWidgets: Record<string, Widget>;
+  overlays: Record<string, Widget>;
 }) {
   return (
     <>
+      {Object.entries(overlays).map(([id, Layer]) => (
+        <Layer key={id} client={rt.client} />
+      ))}
       <Banners rt={rt} />
       <PlayerFrame rt={rt} />
       <TargetFrame rt={rt} />

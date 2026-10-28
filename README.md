@@ -18,7 +18,7 @@ pnpm world:reset     # generate a fresh 10000x10000 world (seed 42)
 pnpm dev             # server on :3010, client on :5173
 ```
 
-Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items. Windows: `C` character, `I` inventory, `J` journal, `K` crafting. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
+Open <http://localhost:5173>. **Click** the ground to walk there, click a creature to fight it, click a person, door or travel pad to use it. Arrow keys or WASD walk (hold to keep going), **Space** uses whatever is in reach, **Tab** targets the nearest enemy, `1`–`6` use quick-slot items, **Enter** chats (`/help` lists channels and emotes, `R` replies to a whisper). Windows: `C` character, `I` inventory, `J` journal, `K` crafting. **F3** opens the developer drawer (connection stats, feature test buttons; Shift+WASD strides 100 tiles for exploring).
 
 ```bash
 pnpm create-feature my-idea    # scaffold features/my-idea/, runs as-is
@@ -98,6 +98,7 @@ export default definePlugin({
   commands: [{ name: 'mossy-caves:sprout', fn: (world, args, entityId) => { /* player asked */ } }],
   events: { 'entity:death': (world, payload) => { /* someone died nearby */ } },
   decorateChunk: (world, area, rng) => { /* new ground appeared; scatter into it */ },
+  privateComponents: ['mossy-caves:secrets'], // only the owner's client ever receives these
 });
 ```
 
@@ -129,11 +130,12 @@ export default defineClient({
     'mossy-caves:log': { title: 'Spores', icon: '🍄', hotkey: 'KeyP', component: SporeLog },
   },
   hud: { 'mossy-caves:meter': SporeMeter },  // always-on widget, right-hand column
+  overlay: { 'mossy-caves:glow': GlowLayer }, // full-canvas layer you position yourself
   panels: { 'mossy-caves:dev': DevButtons }, // developer tools, shown in the F3 drawer
 });
 ```
 
-Window and HUD components receive `{ client }` — a read-only view of the newest snapshot (`client.localPlayer()`, `client.subscribe(...)`), `client.sendIntent`, and `client.notify` for the message log. Two components on an entity also mean something to the HUD without any client code: `interact: { intent, label, range? }` makes that one entity usable, and a `dialog: { name, text, options: [{ label, intent }], closeIntent }` component on a player opens a conversation box whose options send their intents (see `features/town`).
+Window and HUD components receive `{ client }` — a read-only view of the newest snapshot (`client.localPlayer()`, `client.subscribe(...)`), `client.sendIntent`, `client.notify` for the message log, and `client.screenOf(id)` to pin HTML over an entity as it walks (see the speech bubbles in `features/chat`). Two components on an entity also mean something to the HUD without any client code: `interact: { intent, label, range? }` makes that one entity usable, and a `dialog: { name, text, options: [{ label, intent }], closeIntent }` component on a player opens a conversation box whose options send their intents (see `features/town`).
 
 ---
 

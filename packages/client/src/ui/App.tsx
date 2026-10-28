@@ -187,16 +187,18 @@ export function App({
   rt,
   devPanels,
   hudWidgets,
+  overlays,
 }: {
   rt: HudRuntime;
   devPanels: Record<string, DevPanel>;
   hudWidgets: Record<string, FeatureComponent>;
+  overlays: Record<string, FeatureComponent>;
 }) {
   useHotkeys(rt);
   useCoreNotices(rt);
   return (
     <div className="hud">
-      <HudChrome rt={rt} devPanels={devPanels} hudWidgets={hudWidgets} />
+      <HudChrome rt={rt} devPanels={devPanels} hudWidgets={hudWidgets} overlays={overlays} />
       <Windows rt={rt} />
       <DialogBox rt={rt} />
     </div>
