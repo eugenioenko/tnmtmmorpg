@@ -1,0 +1,81 @@
+.guilds { width: 360px; display: flex; flex-direction: column; gap: 8px; }
+
+.guilds input {
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-edge);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--ink);
+  font: inherit;
+}
+
+.guild-found { display: flex; flex-direction: column; gap: 8px; }
+.guild-found label { display: flex; align-items: center; gap: 8px; color: var(--ink-dim); }
+.guild-found label input { flex: 1; }
+.guild-found .guild-tag-input { flex: 0 0 70px; text-transform: uppercase; letter-spacing: 0.1em; }
+.guild-found-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.guild-tag-preview { color: #7fe0a0; font-weight: 700; margin-right: auto; }
+
+.guild-title { display: flex; align-items: baseline; gap: 6px; }
+.guild-tag-chip { color: #7fe0a0; font-weight: 700; letter-spacing: 0.05em; }
+.guild-name { font: 700 16px var(--font-title); color: var(--gold-hi); }
+.guild-count { margin-left: auto; font-size: 11px; }
+
+.guild-motd { font-style: italic; color: var(--ink-dim); font-size: 13px; }
+.guild-motd.edit { width: 100%; box-sizing: border-box; }
+
+.guild-members { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+
+.guild-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.guild-member:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+.guild-member.away { opacity: 0.55; }
+.guild-rank { width: 16px; text-align: center; }
+.guild-rank.officer { color: var(--gold); }
+.guild-member-name { font-weight: 600; }
+.guild-level { font-size: 10px; color: var(--ink-faint); border: 1px solid var(--panel-edge); border-radius: 3px; padding: 0 3px; }
+.guild-seen { margin-left: auto; font-size: 11px; }
+
+.guild-invite { display: flex; gap: 6px; }
+.guild-invite input { flex: 1; }
+
+.guild-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; }
+
+.guild-invite-box { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.guild-actions { display: flex; gap: 8px; }
+
+.guild-invite-prompt.frame {
+  position: absolute;
+  left: 50%;
+  top: 240px;
+  transform: translateX(-50%);
+  width: max-content;
+  padding: 10px 16px;
+  pointer-events: auto;
+  font-size: 14px;
+}
+
+.guild-tags { position: absolute; inset: 0; pointer-events: none; }
+
+.guild-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: 700 10px/1 var(--font-body);
+  letter-spacing: 0.06em;
+  color: #c9e8d4;
+  text-shadow: 0 0 3px #000, 0 1px 1px #000;
+  white-space: nowrap;
+}
+
+.guild-tag.mine { color: #7fe0a0; }
+
+.log-line.guild { color: #7fe0a0; }
+.log-line.guild .speaker { color: #b4f0c8; }

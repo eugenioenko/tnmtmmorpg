@@ -4,16 +4,17 @@ import { defineClient, type ClientAPI, type EntityState } from '@game/shared';
 import type { ChatLine } from './index.ts';
 import './chat.css';
 
-type Channel = 'say' | 'yell' | 'world' | 'party';
+type Channel = 'say' | 'yell' | 'world' | 'party' | 'guild';
 
 const CHANNELS: Record<Channel, { label: string; prefix: string }> = {
   say: { label: 'Say', prefix: '' },
   yell: { label: 'Yell', prefix: '/y ' },
   world: { label: 'World', prefix: '/g ' },
   party: { label: 'Party', prefix: '/p ' },
+  guild: { label: 'Guild', prefix: '/gc ' },
 };
 
-const STICKY: Record<string, Channel> = { s: 'say', say: 'say', y: 'yell', yell: 'yell', g: 'world', world: 'world', p: 'party' };
+const STICKY: Record<string, Channel> = { s: 'say', say: 'say', y: 'yell', yell: 'yell', g: 'world', world: 'world', p: 'party', gc: 'guild' };
 
 interface Inbox {
   seq: number;
@@ -43,6 +44,10 @@ function show(client: ClientAPI, line: ChatLine): void {
       return line.from
         ? client.notify(line.text, 'party', `[Party] ${line.from}:`)
         : client.notify(line.text, 'party');
+    case 'guild':
+      return line.from
+        ? client.notify(line.text, 'guild', `[Guild] ${line.from}:`)
+        : client.notify(line.text, 'guild');
     case 'whisper-in':
       return client.notify(line.text, 'whisper', `${line.from} whispers:`);
     case 'whisper-out':
@@ -139,7 +144,7 @@ function ChatBar({ client }: { client: ClientAPI }) {
   };
 
   const cycle = (): void => {
-    const order: Channel[] = ['say', 'yell', 'world', 'party'];
+    const order: Channel[] = ['say', 'yell', 'world', 'party', 'guild'];
     setChannel(order[(order.indexOf(channel) + 1) % order.length]);
     if (open) input.current?.focus();
   };

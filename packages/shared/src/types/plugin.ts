@@ -285,6 +285,7 @@ export type LogTone =
   | 'chat'
   | 'world'
   | 'party'
+  | 'guild'
   | 'whisper'
   | 'emote';
 
