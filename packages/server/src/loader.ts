@@ -59,6 +59,8 @@ export interface Registries {
   events: Map<string, EventEntry[]>;
   /** Components sent only to the entity that owns them. */
   privateComponents: Set<string>;
+  /** Player components saved with the character on logout. */
+  persistComponents: Set<string>;
 }
 
 function emptyRegistries(): Registries {
@@ -70,6 +72,7 @@ function emptyRegistries(): Registries {
     commands: new Map(),
     events: new Map(),
     privateComponents: new Set(),
+    persistComponents: new Set(),
   };
 }
 
@@ -124,6 +127,9 @@ function requirePlugin(mod: unknown, featureName: string): PluginAPI {
   }
   if (plugin.privateComponents !== undefined && !Array.isArray(plugin.privateComponents)) {
     throw new Error(`[loader] feature '${featureName}': plugin.privateComponents must be an array`);
+  }
+  if (plugin.persistComponents !== undefined && !Array.isArray(plugin.persistComponents)) {
+    throw new Error(`[loader] feature '${featureName}': plugin.persistComponents must be an array`);
   }
   return plugin as PluginAPI;
 }
@@ -287,6 +293,13 @@ function register(registries: Registries, feature: string, plugin: PluginAPI): v
     }
     checkNamespacedId(feature, 'private component', name);
     registries.privateComponents.add(name);
+  }
+
+  for (const name of plugin.persistComponents ?? []) {
+    if (typeof name !== 'string') {
+      throw new Error(`[loader] feature '${feature}': every persisted component must be a string`);
+    }
+    registries.persistComponents.add(name);
   }
 }
 

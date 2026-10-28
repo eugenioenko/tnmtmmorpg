@@ -1,8 +1,12 @@
+import { useEffect, useReducer, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   decodeServerMessage,
   defineClient,
+  type AccountMessage,
   type ClientWindow,
+  type CreationChoice,
+  type DeniedMessage,
   type DeltaSnapshot,
   type FullSnapshot,
   type Intent,
@@ -20,6 +24,9 @@ import { registerInteractions, setCarryCheck } from './interactions.ts';
 import { Controls } from './controls.ts';
 import { App, registerCoreWindows, type FeatureComponent, type FeaturePanel } from './ui/App.tsx';
 import { HudRuntime } from './ui/runtime.ts';
+import { Account } from './account.ts';
+import { AuthRoot, authMessage, signOut } from './auth.tsx';
+import { AccountScreen } from './ui/AccountScreen.tsx';
 
 const WS_URL = (import.meta.env?.VITE_WS_URL as string | undefined) ?? 'ws://localhost:3010';
 const RECONNECT_DELAY_MS = 1000;
@@ -70,6 +77,18 @@ function isPong(value: unknown): value is Pong {
   return msg.t === 'pong' && typeof msg.ts === 'number';
 }
 
+function isAccountMessage(value: unknown): value is AccountMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const msg = value as Record<string, unknown>;
+  return msg.t === 'account' && Array.isArray(msg.characters);
+}
+
+function isDenied(value: unknown): value is DeniedMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const msg = value as Record<string, unknown>;
+  return msg.t === 'denied' && typeof msg.message === 'string';
+}
+
 function isRecipesMessage(value: unknown): value is RecipesMessage {
   if (typeof value !== 'object' || value === null) return false;
   const msg = value as Record<string, unknown>;
@@ -98,11 +117,13 @@ interface LoadedFeatures {
   windows: Record<string, ClientWindow>;
   hud: Record<string, FeatureComponent>;
   overlays: Record<string, FeatureComponent>;
+  /** Character creation choices, keyed by the feature that offers them. */
+  creation: Record<string, CreationChoice>;
 }
 
 /** Register every loaded feature's items, sprites and interactions; collect its UI. */
 function loadFeatures(): LoadedFeatures {
-  const loaded: LoadedFeatures = { devPanels: {}, windows: {}, hud: {}, overlays: {} };
+  const loaded: LoadedFeatures = { devPanels: {}, windows: {}, hud: {}, overlays: {}, creation: {} };
   for (const path of Object.keys(featureModules)) {
     const mod = featureModules[path] as { default?: unknown };
     const plugin = defineClient(mod.default ?? mod) as {
@@ -113,6 +134,7 @@ function loadFeatures(): LoadedFeatures {
       windows?: Record<string, ClientWindow>;
       hud?: Record<string, unknown>;
       overlay?: Record<string, unknown>;
+      creation?: CreationChoice;
     };
     if (typeof plugin !== 'object' || plugin === null) {
       console.error(`[client] ${path}: default export is not a defineClient plugin - skipping`);
@@ -144,17 +166,25 @@ function loadFeatures(): LoadedFeatures {
     for (const [id, layer] of Object.entries(plugin.overlay ?? {})) {
       if (typeof layer === 'function') loaded.overlays[id] = layer as FeatureComponent;
     }
+    const feature = /features\/([^/]+)\/client\.tsx$/.exec(path)?.[1];
+    if (feature && Array.isArray(plugin.creation?.options)) loaded.creation[feature] = plugin.creation;
   }
   return loaded;
 }
 
-async function main(): Promise<void> {
-  // Feature UI discovered via import.meta.glob; loaded before React mounts.
-  const features = loadFeatures();
+interface Started {
+  hud: HudRuntime;
+  account: Account;
+}
 
+/** Bring up the canvas and the connection; runs once, after signing in. */
+async function start(features: LoadedFeatures): Promise<Started> {
   let socket: WebSocket | null = null;
   let game: Game = null!;
   const pending: unknown[] = [];
+  const account = new Account((request) => {
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(request));
+  });
 
   // Connect first so data arrives while PixiJS initialises.
   connect();
@@ -173,6 +203,7 @@ async function main(): Promise<void> {
     if (isWelcome(msg)) {
       game.setLocalEntity(msg.entityId);
       applyViewLimits(msg);
+      account.entered();
     } else if (isRecipesMessage(msg)) {
       registerRecipes(msg.recipes);
     } else if (isFullSnapshot(msg)) {
@@ -211,6 +242,14 @@ async function main(): Promise<void> {
     ws.addEventListener('open', () => {
       if (game) game.state.connected = true;
       ws.send(JSON.stringify({ t: 'binary', enabled: true }));
+      authMessage()
+        .then((auth) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(auth));
+        })
+        .catch(() => {
+          account.deny({ t: 'denied', reason: 'auth', message: 'Your sign-in has expired.' });
+          ws.close();
+        });
     });
 
     ws.addEventListener('message', (event) => {
@@ -238,6 +277,16 @@ async function main(): Promise<void> {
       if (typeof message !== 'object' || message === null) return;
 
       const msg = message as Record<string, unknown>;
+      if (isAccountMessage(msg)) {
+        if (game && account.phase === 'playing') game.setLocalEntity(null);
+        const resume = account.roster(msg);
+        if (resume) account.play(resume);
+        return;
+      }
+      if (isDenied(msg)) {
+        account.deny(msg);
+        return;
+      }
       // Buffer everything until PixiJS is ready; pongs before then are stale.
       if (!game) {
         if (!isPong(msg)) pending.push(msg);
@@ -248,6 +297,7 @@ async function main(): Promise<void> {
         game.state.pingMs = ~~(performance.now() - msg.ts);
       } else if (isWelcome(msg)) {
         game.setLocalEntity(msg.entityId);
+        account.entered();
       } else if (isRecipesMessage(msg)) {
         registerRecipes(msg.recipes);
       } else if (isFullSnapshot(msg)) {
@@ -264,6 +314,8 @@ async function main(): Promise<void> {
         game.state.connected = false;
         game.setLocalEntity(null);
       }
+      if (account.phase === 'denied') return;
+      account.disconnected();
       setTimeout(connect, RECONNECT_DELAY_MS);
     });
   }
@@ -309,22 +361,67 @@ async function main(): Promise<void> {
   hud = new HudRuntime(game, controls, sendIntent);
   registerCoreWindows(hud);
   for (const [id, win] of Object.entries(features.windows)) hud.windows.set(id, { ...win, id });
-  const overlay = document.getElementById('ui-overlay');
-  if (overlay) {
-    createRoot(overlay).render(
-      <App
-        rt={hud}
-        devPanels={features.devPanels}
-        hudWidgets={features.hud}
-        overlays={features.overlays}
-      />,
-    );
-  }
+  hud.windows.set('menu', {
+    id: 'menu',
+    title: 'Game Menu',
+    icon: '🚪',
+    order: 99,
+    component: () => <GameMenu account={account} />,
+  });
   hud.notify('Welcome to the realm. Click to walk, click creatures to fight, Enter to chat.', 'info');
-  if (import.meta.env?.DEV) Object.assign(window, { __game: game, __hud: hud });
+  if (import.meta.env?.DEV) Object.assign(window, { __game: game, __hud: hud, __account: account });
 
   startPing();
   startViewReports();
+  return { hud, account };
+}
+
+function GameMenu({ account }: { account: Account }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 220 }}>
+      <button type="button" className="btn" onClick={() => account.leave()}>
+        Change character
+      </button>
+      <button type="button" className="btn danger" onClick={signOut}>
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+let booting: Promise<Started> | null = null;
+
+/** Mounted once signed in: starts the game and swaps between the account screen and the HUD. */
+function Boot({ features }: { features: LoadedFeatures }) {
+  const [started, setStarted] = useState<Started | null>(null);
+  const [, force] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    booting ??= start(features);
+    void booting.then(setStarted);
+  }, [features]);
+  useEffect(() => started?.account.onChange(force), [started]);
+  if (!started) return null;
+  const { hud, account } = started;
+  return (
+    <>
+      {account.phase === 'playing' && (
+        <App rt={hud} devPanels={features.devPanels} hudWidgets={features.hud} overlays={features.overlays} />
+      )}
+      <AccountScreen account={account} choices={features.creation} />
+    </>
+  );
+}
+
+function main(): void {
+  // Feature UI discovered via import.meta.glob; loaded before React mounts.
+  const features = loadFeatures();
+  const overlay = document.getElementById('ui-overlay');
+  if (!overlay) return;
+  createRoot(overlay).render(
+    <AuthRoot>
+      <Boot features={features} />
+    </AuthRoot>,
+  );
 }
 
 main();

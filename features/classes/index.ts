@@ -3,6 +3,7 @@ import {
   isStatsComponent,
   OVERWORLD,
   type EntityState,
+  type PlayerEnterEvent,
   type WorldAPI,
 } from '@game/shared';
 
@@ -15,8 +16,8 @@ import {
  *
  * This feature never touches hit points itself: damage goes through
  * combat's 'combat:strike', shields and marks through 'combat:modifier', and
- * healing through character's 'character:heal'. The chosen path persists per
- * browser with its own token.
+ * healing through character's 'character:heal'. The chosen path persists with
+ * the character, and can also be picked on the character creation screen.
  */
 
 export type ClassId = 'warrior' | 'ranger' | 'mystic';
@@ -132,7 +133,6 @@ let clock = 0;
 let castSeq = 0;
 const casts = new Map<number, Cast>();
 const poisons: Poison[] = [];
-const tokens = new Map<number, string>();
 
 const floor = (n: number): number => n | 0;
 const cheb = (a: { x: number; y: number }, b: { x: number; y: number }): number => {
@@ -194,7 +194,6 @@ function choose(world: WorldAPI, id: number, args: unknown): void {
       'classes:class': wanted,
     });
     casts.delete(id);
-    save(world, id, wanted);
     tell(world, id, `You walk the path of the ${def.name}. Your abilities are on Q, F, G and T.`, 'level');
   };
   if (!state.cls) {
@@ -391,26 +390,19 @@ function tickPoisons(world: WorldAPI): void {
   }
 }
 
-function save(world: WorldAPI, id: number, cls: ClassId): void {
-  const token = tokens.get(id);
-  if (token) world.getSet(`classes:save:${token}`, cls);
-}
+const isClassId = (v: unknown): v is ClassId => typeof v === 'string' && Object.hasOwn(CLASSES, v);
 
-function claim(world: WorldAPI, id: number, args: unknown): void {
-  const token = (args as { token?: unknown } | undefined)?.token;
-  if (typeof token !== 'string' || !/^[a-z0-9]{16,64}$/.test(token)) return;
-  tokens.set(id, token);
-  const saved = world.getSet(`classes:save:${token}`);
-  const me = world.get(id);
+/** A path picked at creation applies at once; otherwise the saved one comes back. */
+function enter(world: WorldAPI, p: Partial<PlayerEnterEvent>): void {
+  if (typeof p.entityId !== 'number') return;
+  const me = world.get(p.entityId);
   if (!me) return;
-  if (saved !== 'warrior' && saved !== 'ranger' && saved !== 'mystic') {
-    world.update(id, { 'classes:state': { cls: null, mana: 0, maxMana: 0, cd: {}, gcd: 0 } satisfies ClassState });
-    return;
-  }
-  const maxMana = maxManaFor(levelOf(me));
-  world.update(id, {
-    'classes:state': { cls: saved, mana: maxMana, maxMana, cd: {}, gcd: 0 } satisfies ClassState,
-    'classes:class': saved,
+  const picked = p.created ? p.traits?.classes : me.components['classes:class'];
+  const cls = isClassId(picked) ? picked : null;
+  const maxMana = cls ? maxManaFor(levelOf(me)) : 0;
+  world.update(me.id, {
+    'classes:state': { cls, mana: maxMana, maxMana, cd: {}, gcd: 0 } satisfies ClassState,
+    ...(cls ? { 'classes:class': cls } : {}),
   });
 }
 
@@ -420,6 +412,7 @@ export default definePlugin({
   recipes: [],
   entityKinds: [],
   privateComponents: ['classes:state'],
+  persistComponents: ['classes:class'],
 
   systems: [
     {
@@ -429,7 +422,6 @@ export default definePlugin({
         tickCasts(world);
         tickPools(world);
         tickPoisons(world);
-        if (clock % 600 === 0) for (const id of tokens.keys()) if (!world.get(id)) tokens.delete(id);
       },
     },
   ],
@@ -437,8 +429,9 @@ export default definePlugin({
   commands: [
     { name: 'classes:choose', fn: (world, args, id) => choose(world, id, args) },
     { name: 'classes:cast', fn: (world, args, id) => cast(world, id, args) },
-    { name: 'classes:claim', fn: (world, args, id) => claim(world, id, args) },
   ],
 
-  events: {},
+  events: {
+    'player:enter': (world, payload) => enter(world, payload as Partial<PlayerEnterEvent>),
+  },
 });

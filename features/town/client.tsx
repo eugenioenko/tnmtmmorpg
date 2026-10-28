@@ -93,37 +93,12 @@ function Journal({ client }: { client: ClientAPI }) {
   );
 }
 
-const TOKEN_KEY = 'tnmt:town-token';
-
-function token(): string {
-  try {
-    const existing = localStorage.getItem(TOKEN_KEY);
-    if (existing && /^[a-z0-9]{16,64}$/.test(existing)) return existing;
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const fresh = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem(TOKEN_KEY, fresh);
-    return fresh;
-  } catch {
-    return '';
-  }
-}
-
-/**
- * Claims this browser's saved quest log on every new connection, and says
- * so once when a bring-quest's items are all in the pack.
- */
+/** Says so once when a bring-quest's items are all in the pack. */
 function QuestWatcher({ client }: { client: ClientAPI }) {
   useEffect(() => {
     const ready = new Set<string>();
-    let claimed: number | null = null;
     return client.subscribe(() => {
       const me = client.localPlayer();
-      if (me && me.id !== claimed) {
-        claimed = me.id;
-        const t = token();
-        if (t) client.sendIntent({ t: 'intent', kind: 'town:claim', token: t });
-      }
       for (const q of quests(me).active) {
         if (!BRING[q.id]) continue;
         const done = progress(me, q) >= q.goal;

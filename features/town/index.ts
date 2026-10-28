@@ -413,31 +413,21 @@ function rewardText(world: WorldAPI, def: QuestDef): string {
   return parts.join(', ');
 }
 
-/** Connection token per player entity, from 'town:claim'; quests are saved under it. */
-const tokens = new Map<number, string>();
-
 function writeQuests(world: WorldAPI, id: number, log: QuestLog): void {
   world.update(id, { quests: log });
-  const token = tokens.get(id);
-  if (token) world.getSet(`town:save:${token}`, JSON.stringify(log));
 }
 
-function claim(world: WorldAPI, id: number, args: unknown): void {
-  const token = (args as { token?: unknown } | undefined)?.token;
-  if (typeof token !== 'string' || !/^[a-z0-9]{16,64}$/.test(token)) return;
-  tokens.set(id, token);
-  const raw = world.getSet(`town:save:${token}`);
-  if (!raw) return;
-  try {
-    const saved = JSON.parse(raw) as Partial<QuestLog>;
-    const log: QuestLog = {
+/** Drop saved quests this version of the village no longer offers. */
+function enter(world: WorldAPI, id: unknown): void {
+  if (typeof id !== 'number') return;
+  const saved = world.get(id)?.components.quests as Partial<QuestLog> | undefined;
+  if (!saved) return;
+  world.update(id, {
+    quests: {
       active: (Array.isArray(saved.active) ? saved.active : []).filter((a) => QUESTS.some((q) => q.id === a.id)),
       done: (Array.isArray(saved.done) ? saved.done : []).filter((d) => typeof d === 'string'),
-    };
-    world.update(id, { quests: log });
-  } catch {
-    // A corrupt record just means starting the quest log over.
-  }
+    } satisfies QuestLog,
+  });
 }
 
 function accept(world: WorldAPI, player: EntityState, npc: EntityState, resident: Resident, questId: unknown): void {
@@ -714,7 +704,6 @@ export default definePlugin({
             settle(world);
           }
         }
-        if (clock % 600 === 0) for (const id of tokens.keys()) if (!world.get(id)) tokens.delete(id);
         if (clock % 5 !== 0) return;
         for (const p of world.query('player', 'dialog')) {
           const d = p.components.dialog as { npcId?: number } | null;
@@ -746,10 +735,12 @@ export default definePlugin({
     { name: 'town:chat', fn: (world, args, id) => onChat(world, id, args) },
     { name: 'town:choose', fn: (world, args, id) => onChoose(world, id, args) },
     { name: 'town:close', fn: (world, _args, id) => void world.update(id, { dialog: null }) },
-    { name: 'town:claim', fn: (world, args, id) => claim(world, id, args) },
   ],
 
+  persistComponents: ['quests'],
+
   events: {
+    'player:enter': (world, payload) => enter(world, (payload as { entityId?: unknown }).entityId),
     'bestiary:slain': (world, payload) => {
       const p = payload as { killerId?: unknown; species?: unknown };
       if (typeof p.killerId !== 'number' || typeof p.species !== 'string') return;

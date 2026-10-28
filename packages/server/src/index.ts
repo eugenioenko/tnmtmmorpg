@@ -16,13 +16,26 @@ import { setPrivateComponents } from './snapshot.ts';
 import type { InventoryContext } from './systems/inventory.ts';
 import { tickCrafting, type CraftingContext } from './systems/crafting.ts';
 import { Profiler } from './profiler.ts';
-import { startWsServer } from './ws.ts';
+import { startWsServer, type AuthMode } from './ws.ts';
+import { oidcVerifier } from './characters.ts';
 
 const PORT = Number(process.env.PORT ?? 3010);
 const WORLD_DB = process.env.WORLD_DB ?? '../../.data/dev.sqlite';
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH ?? DEFAULT_WORLD_WIDTH);
 const WORLD_HEIGHT = Number(process.env.WORLD_HEIGHT ?? DEFAULT_WORLD_HEIGHT);
 const WORLD_SEED = Number(process.env.WORLD_SEED ?? DEFAULT_WORLD_SEED);
+/**
+ * Sign-in: OIDC_ISSUER_URL turns on accounts backed by that identity
+ * provider. Without it, AUTH=off spawns throwaway players (the tests), and
+ * anything else trusts a browser-local id (local development).
+ */
+const OIDC_ISSUER_URL = process.env.OIDC_ISSUER_URL;
+const AUTH: AuthMode = OIDC_ISSUER_URL
+  ? { kind: 'oidc', verify: oidcVerifier(OIDC_ISSUER_URL) }
+  : process.env.AUTH === 'off'
+    ? { kind: 'off' }
+    : { kind: 'dev' };
+
 /** Profiling: log per-system timing, memory and snapshot sizes every 100 ticks. */
 const PROFILE = process.env.PROFILE === '1' || process.argv.includes('--profile');
 
@@ -63,6 +76,9 @@ async function main(): Promise<void> {
   const { entities } = loadAll(db);
   const chunks = loadChunks(db);
   if (entities.length > 0) world.loadFromRows(entities);
+  // Players are owned by connections, and none survive a restart: drop any
+  // left behind by a crash. Their characters were saved on their own.
+  for (const e of world.query('player')) world.despawn(e.id);
   world.loadChunks(chunks);
   console.log(
     `[server] world db ${WORLD_DB}: ${entities.length} entities, ${chunks.size} tile chunk(s)` +
@@ -195,6 +211,10 @@ async function main(): Promise<void> {
     enqueueIntent: (entityId, intent) => tickLoop.queueIntent({ entityId, intent }),
     // Phase 6: each client receives the recipe registry once on connect.
     recipes: [...registries.recipes.values()],
+    db,
+    auth: AUTH,
+    persistComponents: registries.persistComponents,
+    onEnter: (event) => bus.emit('player:enter', event),
     // Profiling: snapshot wire sizes per session — JSON and binary both
     // measured in their real encoded byte length.
     onSnapshot: (msg, data) =>
@@ -280,8 +300,9 @@ async function main(): Promise<void> {
   function shutdown(signal: string): void {
     console.log(`[server] ${signal} received - shutting down`);
     tickLoop.stop();
-    world.flushDirty(db);
+    // Sessions save their characters and despawn them before the final flush.
     wsServer.close();
+    world.flushDirty(db);
     db.close();
     console.log('[server] flushed dirty state - bye');
     process.exit(0);

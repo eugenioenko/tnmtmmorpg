@@ -3,7 +3,6 @@ import { defineClient, isStatsComponent, type ClientAPI } from '@game/shared';
 import { CHOOSE_LEVEL, CLASSES, type Ability, type ClassId, type ClassState } from './index.ts';
 import './classes.css';
 
-const TOKEN_KEY = 'tnmt:classes-token';
 const KEYS = ['KeyQ', 'KeyF', 'KeyG', 'KeyT'];
 const KEY_LABELS = ['Q', 'F', 'G', 'T'];
 
@@ -22,25 +21,11 @@ function level(client: ClientAPI): number {
   return isStatsComponent(s) ? s.level : 1;
 }
 
-function token(): string {
-  try {
-    const existing = localStorage.getItem(TOKEN_KEY);
-    if (existing && /^[a-z0-9]{16,64}$/.test(existing)) return existing;
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const fresh = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem(TOKEN_KEY, fresh);
-    return fresh;
-  } catch {
-    return '';
-  }
-}
-
 function castAbility(client: ClientAPI, ability: Ability): void {
   client.sendIntent({ t: 'intent', kind: 'classes:cast', ability: ability.id, targetId: client.target() ?? undefined });
 }
 
-/** Restores the chosen path, points new level-5 players at the choice, and binds Q/F/G/T. */
+/** Points level-5 players without a path at the choice, and binds Q/F/G/T. */
 function ClassAgent({ client }: { client: ClientAPI }) {
   useEffect(() => {
     let claimed: number | null = null;
@@ -51,8 +36,6 @@ function ClassAgent({ client }: { client: ClientAPI }) {
       if (me.id !== claimed) {
         claimed = me.id;
         nudged = false;
-        const t = token();
-        if (t) client.sendIntent({ t: 'intent', kind: 'classes:claim', token: t });
         return;
       }
       const s = stateOf(client);
@@ -225,5 +208,12 @@ export default defineClient({
   },
   windows: {
     'classes:path': { title: 'Your Path', icon: '✦', hotkey: 'KeyL', order: 6, component: PathWindow },
+  },
+  creation: {
+    label: 'Path',
+    options: [
+      ...Object.values(CLASSES).map((c) => ({ id: c.id, label: c.name, icon: c.icon, blurb: c.blurb })),
+      { id: 'undecided', label: 'Undecided', icon: '❔', blurb: `Choose a path later, once you reach level ${CHOOSE_LEVEL}.` },
+    ],
   },
 });

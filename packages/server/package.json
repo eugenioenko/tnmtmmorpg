@@ -4,6 +4,7 @@
   "main": "./src/index.ts",
   "dependencies": {
     "@game/shared": "workspace:*",
+    "jose": "^6.2.13",
     "ws": "^8.21.1"
   },
   "scripts": {

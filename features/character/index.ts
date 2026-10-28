@@ -7,6 +7,7 @@ import {
   type EntityState,
   type InventoryComponent,
   type ItemDef,
+  type PlayerEnterEvent,
   type StatsComponent,
   type WorldAPI,
 } from '@game/shared';
@@ -21,8 +22,8 @@ import {
  *   'character:charge' { entityId, gold, then(world, ok) }   — spend gold
  *   'character:heal'   { entityId, amount }                  — restore health
  *
- * Progress survives reconnects: the client keeps a private token and sends
- * 'character:claim' on connect; the record is stored with world.getSet.
+ * The component persists with the player's character (core saves it on
+ * logout). A new character takes the name chosen at creation.
  */
 
 export interface EquipmentSlots {
@@ -44,19 +45,6 @@ export interface CharacterComponent {
   look: number;
   /** Recent messages for this player's log; `n` only ever increases. */
   log: { n: number; text: string; tone: string }[];
-}
-
-interface SavedCharacter {
-  name: string;
-  level: number;
-  xp: number;
-  gold: number;
-  kills: number;
-  deaths: number;
-  equipment: EquipmentSlots;
-  hp: number;
-  look?: number;
-  inventory?: InventoryComponent;
 }
 
 /** Outfits from the temporary art's character sets. */
@@ -127,18 +115,14 @@ const EPITHET = ['of the Ford', 'Ashborn', 'the Quiet', 'Thornwood', 'the Red', 
 
 const REGEN_EVERY = 10;
 const REGEN_AFTER_HIT = 60;
-const SAVE_EVERY = 50;
 const RESPAWN = { x: WORLD_CENTER_X, y: WORLD_CENTER_Y + 1 };
 
-// Process-local: which connection token belongs to which entity, the last
-// tick each entity was hit, and a dirty set for saving. None of it needs to
-// survive a restart: tokens are re-claimed on reconnect.
-const tokens = new Map<number, string>();
-/** Tick each player was first seen without a character; a claim gets a moment to arrive. */
+// Process-local: the last tick each entity was hit. It does not need to
+// survive a restart.
+/** Tick each player was first seen without a character; 'player:enter' gets a moment to arrive. */
 const firstSeen = new Map<number, number>();
 const CLAIM_GRACE = 15;
 const lastHit = new Map<number, number>();
-const dirty = new Set<number>();
 let clock = 0;
 
 const floor = (n: number): number => n | 0;
@@ -201,9 +185,10 @@ function freshCharacter(world: WorldAPI): CharacterComponent {
   };
 }
 
-function createCharacter(world: WorldAPI, e: EntityState): void {
+function createCharacter(world: WorldAPI, e: EntityState, name?: string): void {
   const stats = e.components.stats;
   const c = freshCharacter(world);
+  if (name) c.name = name;
   pushLog(c, `You are ${c.name}. The village elder has been asking for help.`, 'quest');
   const hp = isStatsComponent(stats) ? stats.hp : BASE.hp;
   world.update(e.id, { character: c, stats: deriveStats(world, 1, {}, hp), appearance: appearanceFor(c.look) });
@@ -219,24 +204,6 @@ function read(world: WorldAPI, id: number) {
   return { e, c: { ...c, equipment: { ...c.equipment }, log: [...c.log] }, s: { ...s } };
 }
 
-function save(world: WorldAPI, id: number): void {
-  const token = tokens.get(id);
-  const r = read(world, id);
-  if (!token || !r) return;
-  const record: SavedCharacter = {
-    name: r.c.name,
-    level: r.s.level,
-    xp: r.c.xp,
-    gold: r.c.gold,
-    kills: r.c.kills,
-    deaths: r.c.deaths,
-    equipment: r.c.equipment,
-    hp: r.s.hp,
-    look: r.c.look,
-    inventory: isInventory(r.e.components.inventory) ? r.e.components.inventory : undefined,
-  };
-  world.getSet(`character:save:${token}`, JSON.stringify(record));
-}
 
 function grant(
   world: WorldAPI,
@@ -264,7 +231,6 @@ function grant(
     c.xpNext = xpForLevel(level < MAX_LEVEL ? level + 1 : level);
   }
   world.update(id, { character: c });
-  dirty.add(id);
 }
 
 /** Remove one item from a slot of the player's (core-owned) inventory. */
@@ -304,7 +270,6 @@ function useItem(world: WorldAPI, id: number, slot: number): void {
     if (!takeFromSlot(world, id, slot)) return;
     const hp = r.s.hp + heal > r.s.maxHp ? r.s.maxHp : r.s.hp + heal;
     world.update(id, { stats: { ...r.s, hp } });
-    dirty.add(id);
     return;
   }
 
@@ -323,7 +288,6 @@ function useItem(world: WorldAPI, id: number, slot: number): void {
   }
   pushLog(r.c, `You equip the ${name}.`, 'good');
   world.update(id, { character: r.c, stats: deriveStats(world, r.s.level, r.c.equipment, r.s.hp) });
-  dirty.add(id);
 }
 
 function unequip(world: WorldAPI, id: number, slotName: unknown): void {
@@ -338,7 +302,6 @@ function unequip(world: WorldAPI, id: number, slotName: unknown): void {
   }
   delete r.c.equipment[slotName];
   world.update(id, { character: r.c, stats: deriveStats(world, r.s.level, r.c.equipment, r.s.hp) });
-  dirty.add(id);
 }
 
 function respawn(world: WorldAPI, id: number, killerName: string): void {
@@ -351,63 +314,6 @@ function respawn(world: WorldAPI, id: number, killerName: string): void {
   world.update(id, { character: r.c, stats: { ...r.s, hp: r.s.maxHp } });
   world.travel(id, OVERWORLD, RESPAWN.x, RESPAWN.y);
   lastHit.delete(id);
-  dirty.add(id);
-}
-
-function claim(world: WorldAPI, id: number, args: unknown): void {
-  const token = (args as { token?: unknown } | undefined)?.token;
-  if (typeof token !== 'string' || !/^[a-z0-9]{16,64}$/.test(token)) return;
-  for (const [other, t] of tokens) {
-    if (t === token && other !== id && world.get(other)) {
-      save(world, other);
-      tokens.delete(other);
-    }
-  }
-  tokens.set(id, token);
-  const raw = world.getSet(`character:save:${token}`);
-  const e = world.get(id);
-  if (!e) return;
-  if (!raw) {
-    if (!isCharacter(e.components.character)) createCharacter(world, e);
-    save(world, id);
-    return;
-  }
-  let saved: SavedCharacter;
-  try {
-    saved = JSON.parse(raw) as SavedCharacter;
-  } catch {
-    return;
-  }
-  const c = freshCharacter(world);
-  c.name = typeof saved.name === 'string' ? saved.name : c.name;
-  c.xp = saved.xp | 0;
-  c.gold = saved.gold | 0;
-  c.kills = saved.kills | 0;
-  c.deaths = saved.deaths | 0;
-  if (typeof saved.look === 'number') c.look = saved.look | 0;
-  c.equipment = Object.fromEntries(
-    Object.entries(saved.equipment ?? {}).filter(([, v]) => typeof v === 'string' && gearOf(world, v)),
-  ) as EquipmentSlots;
-  const level = levelForXp(c.xp);
-  c.xpPrev = xpForLevel(level);
-  c.xpNext = xpForLevel(level + 1);
-  pushLog(c, `Welcome back, ${c.name}.`, 'info');
-  firstSeen.delete(id);
-  const stats = deriveStats(world, level, c.equipment, saved.hp > 0 ? saved.hp : 1);
-  const patch: Record<string, unknown> = { character: c, stats, appearance: appearanceFor(c.look) };
-  if (saved.inventory && isInventory(saved.inventory)) patch.inventory = saved.inventory;
-  world.update(id, patch);
-}
-
-function rename(world: WorldAPI, id: number, args: unknown): void {
-  const raw = (args as { name?: unknown } | undefined)?.name;
-  if (typeof raw !== 'string') return;
-  const name = raw.replace(/[^\p{L}\p{N} '-]/gu, '').trim().slice(0, 24);
-  const r = read(world, id);
-  if (!r || name.length < 2) return;
-  r.c.name = name;
-  world.update(id, { character: r.c });
-  dirty.add(id);
 }
 
 function changeLook(world: WorldAPI, id: number, args: unknown): void {
@@ -416,7 +322,6 @@ function changeLook(world: WorldAPI, id: number, args: unknown): void {
   if (!r) return;
   r.c.look = (((r.c.look ?? 0) + step) % LOOKS.length + LOOKS.length) % LOOKS.length;
   world.update(id, { character: r.c, appearance: appearanceFor(r.c.look) });
-  dirty.add(id);
 }
 
 function readNumber(args: unknown, key: string): number | undefined {
@@ -455,10 +360,7 @@ export default definePlugin({
             }
           }
         }
-        if (clock % SAVE_EVERY === 0) {
-          for (const id of dirty) save(world, id);
-          dirty.clear();
-          for (const id of tokens.keys()) if (!world.get(id)) tokens.delete(id);
+        if (clock % 50 === 0) {
           for (const id of lastHit.keys()) if (!world.get(id)) lastHit.delete(id);
           for (const id of firstSeen.keys()) if (!world.get(id)) firstSeen.delete(id);
         }
@@ -479,12 +381,27 @@ export default definePlugin({
       fn: (world, args, entityId) =>
         unequip(world, entityId, (args as { slot?: unknown } | undefined)?.slot),
     },
-    { name: 'character:claim', fn: (world, args, entityId) => claim(world, entityId, args) },
-    { name: 'character:rename', fn: (world, args, entityId) => rename(world, entityId, args) },
     { name: 'character:look', fn: (world, args, entityId) => changeLook(world, entityId, args) },
   ],
 
+  persistComponents: ['character', 'appearance'],
+
   events: {
+    'player:enter': (world, payload) => {
+      const p = payload as Partial<PlayerEnterEvent>;
+      if (typeof p.entityId !== 'number') return;
+      const e = world.get(p.entityId);
+      if (!e) return;
+      if (p.created || !isCharacter(e.components.character)) {
+        createCharacter(world, e, p.name);
+        return;
+      }
+      const r = read(world, e.id);
+      if (!r) return;
+      pushLog(r.c, `Welcome back, ${r.c.name}.`, 'info');
+      firstSeen.delete(e.id);
+      world.update(e.id, { character: r.c });
+    },
     'entity:damage': (_world, payload) => {
       const targetId = (payload as { targetId?: unknown }).targetId;
       if (typeof targetId === 'number') lastHit.set(targetId, clock);
@@ -538,7 +455,6 @@ export default definePlugin({
       if (r && ok) {
         r.c.gold -= floor(p.gold);
         world.update(p.entityId, { character: r.c });
-        dirty.add(p.entityId);
       }
       if (typeof p.then === 'function') (p.then as (w: WorldAPI, ok: boolean) => void)(world, ok);
     },

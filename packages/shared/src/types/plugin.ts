@@ -199,6 +199,37 @@ export interface PluginAPI {
    * inbox or a trade offer never reaches a bystander's client.
    */
   privateComponents?: string[];
+  /**
+   * Components on a player entity that belong to the character and survive
+   * logging out: core saves them with the character and restores them the
+   * next time it enters the world. Anything not listed (a cast in progress,
+   * an open dialog, a pending trade) is dropped on logout.
+   */
+  persistComponents?: string[];
+}
+
+/**
+ * Emitted by core when a character enters the world, after its entity has
+ * been spawned with its saved components. `created` is true on the first
+ * entry after character creation, when `traits` holds the choices made on
+ * the creation screen (see `defineClient({ creation })`), keyed by feature
+ * id. Features validate the traits they own and ignore the rest.
+ */
+export interface PlayerEnterEvent {
+  entityId: number;
+  name: string;
+  created: boolean;
+  traits: Record<string, string>;
+}
+
+/**
+ * One choice on the character creation screen, contributed by a feature.
+ * The picked option's `id` reaches the server in `PlayerEnterEvent.traits`
+ * under the feature's id.
+ */
+export interface CreationChoice {
+  label: string;
+  options: { id: string; label: string; icon: string; blurb?: string }[];
 }
 
 /**
@@ -325,6 +356,8 @@ export function defineClient(plugin: {
    * placed by the feature itself: speech bubbles, a chat bar.
    */
   overlay?: Record<string, unknown>;
+  /** A choice on the character creation screen; its pick is keyed by the feature id. */
+  creation?: CreationChoice;
 }): unknown {
   return plugin;
 }
