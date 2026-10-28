@@ -295,7 +295,7 @@ function ActionBar({ rt }: { rt: HudRuntime }) {
   useHudState(rt);
   const me = rt.game.localPlayer();
   const quick = quickSlots(me);
-  const buttons = [...rt.windows.values()].sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  const buttons = [...rt.windows.values()].filter((w) => w.onBar !== false).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
   return (
     <div className="action-bar frame interactive">
       <div className="slot-row">
