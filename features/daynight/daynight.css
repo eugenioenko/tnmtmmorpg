@@ -1,0 +1,36 @@
+.daynight-shade,
+.daynight-dusk {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  transition: opacity 20s linear;
+}
+
+.daynight-shade {
+  background: radial-gradient(ellipse 70% 70% at 50% 50%, #0c1638 0%, #050a1e 100%);
+  mix-blend-mode: multiply;
+}
+
+.daynight-dusk {
+  background: linear-gradient(180deg, #ff8a3d, #b0406a);
+  mix-blend-mode: soft-light;
+}
+
+.daynight-clock.frame {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.daynight-icon { font-size: 14px; }
+
+.daynight-time {
+  margin-left: auto;
+  font: 600 13px var(--font-title);
+  color: var(--gold-hi);
+  letter-spacing: 0.04em;
+}

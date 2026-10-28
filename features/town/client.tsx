@@ -1,5 +1,6 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useRef } from 'react';
 import { defineClient, type ClientAPI, type EntityState } from '@game/shared';
+import './town.css';
 
 interface QuestEntry {
   id: string;
@@ -112,7 +113,45 @@ function QuestWatcher({ client }: { client: ClientAPI }) {
   return null;
 }
 
+/** A drowsy zZ over residents who have gone to bed. */
+function Snores({ client }: { client: ClientAPI }) {
+  usePlayer(client);
+  const nodes = useRef(new Map<number, HTMLDivElement>());
+  useEffect(() => {
+    let frame = 0;
+    const place = (): void => {
+      for (const [id, el] of nodes.current) {
+        const p = client.screenOf(id);
+        el.style.visibility = p ? 'visible' : 'hidden';
+        if (p) el.style.transform = `translate(${(p.x | 0) + 8}px, ${(p.y | 0) - 50}px)`;
+      }
+      frame = requestAnimationFrame(place);
+    };
+    frame = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(frame);
+  }, [client]);
+  const sleepers: number[] = [];
+  for (const e of client.entities()) if (e.components['town:asleep'] === true) sleepers.push(e.id);
+  return (
+    <div className="town-snores">
+      {sleepers.map((id) => (
+        <div
+          key={id}
+          className="town-snore"
+          ref={(el) => {
+            if (el) nodes.current.set(id, el);
+            else nodes.current.delete(id);
+          }}
+        >
+          z<span>Z</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default defineClient({
+  overlay: { 'town:snores': Snores },
   interactions: {
     npc: { intent: 'town:chat', label: 'Talk to' },
   },

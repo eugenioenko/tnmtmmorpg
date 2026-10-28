@@ -8,6 +8,7 @@ import {
   type ItemDef,
   type WorldAPI,
 } from '@game/shared';
+import { currentStop, runRoutines, setHour } from './routines.ts';
 
 /**
  * The village's people: an elder, a guard captain, an alchemist and a trader
@@ -20,6 +21,9 @@ import {
  * the bestiary's 'bestiary:slain'; rewards and purchases go through the
  * character feature's 'character:grant' and 'character:charge' events, so
  * this feature never touches gold or experience directly.
+ *
+ * Residents keep daily routines (routines.ts) by the daynight feature's
+ * 'daynight:hour'; a sleeping one carries `town:asleep` for the client.
  */
 
 type NpcId = 'elder' | 'captain' | 'alchemist' | 'trader';
@@ -390,7 +394,7 @@ function rootPage(world: WorldAPI, player: EntityState, npc: EntityState, reside
   }
   options.push({ label: 'Any news?', intent: choose(npc.id, 'rumor') });
   options.push({ label: 'Farewell.', intent: { kind: 'town:close' } });
-  const greeting = resident.greeting[floor(world.rng() * resident.greeting.length)];
+  const greeting = currentStop(resident.id)?.line ?? resident.greeting[floor(world.rng() * resident.greeting.length)];
   setDialog(world, player.id, npc, resident.name, text ?? greeting, options);
 }
 
@@ -704,6 +708,7 @@ export default definePlugin({
             settle(world);
           }
         }
+        runRoutines(world, (e) => residentOf(e)?.id);
         if (clock % 5 !== 0) return;
         for (const p of world.query('player', 'dialog')) {
           const d = p.components.dialog as { npcId?: number } | null;
@@ -741,6 +746,10 @@ export default definePlugin({
 
   events: {
     'player:enter': (world, payload) => enter(world, (payload as { entityId?: unknown }).entityId),
+    'daynight:hour': (_world, payload) => {
+      const h = (payload as { hour?: unknown }).hour;
+      if (typeof h === 'number') setHour(h);
+    },
     'bestiary:slain': (world, payload) => {
       const p = payload as { killerId?: unknown; species?: unknown };
       if (typeof p.killerId !== 'number' || typeof p.species !== 'string') return;
