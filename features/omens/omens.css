@@ -1,0 +1,41 @@
+.omen-tracker.frame {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-color: #7a2b22;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 14px rgba(200, 60, 40, 0.35);
+  animation: omen-pulse 2.4s ease-in-out infinite;
+}
+
+.omen-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 14px var(--font-title);
+  color: #ff9a7a;
+}
+
+.omen-level {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.omen-title {
+  font-size: 11px;
+  color: var(--ink-dim);
+  font-style: italic;
+}
+
+.bar.omen-hp { height: 9px; margin-top: 2px; }
+
+.omen-where {
+  font: 600 12px var(--font-body);
+  color: var(--gold-hi);
+}
+
+@keyframes omen-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 10px rgba(200, 60, 40, 0.25); }
+  50% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 18px rgba(230, 80, 50, 0.55); }
+}
