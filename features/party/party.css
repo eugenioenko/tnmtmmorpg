@@ -1,0 +1,140 @@
+.party-frames.frame {
+  position: absolute;
+  left: 12px;
+  top: 136px;
+  width: 220px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+  font-size: 12px;
+}
+
+.party-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 12px var(--font-title);
+  color: var(--gold-hi);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.party-head .spacer,
+.party-line .spacer { flex: 1; }
+
+.party-member { display: flex; flex-direction: column; gap: 2px; }
+.party-member.away { opacity: 0.5; }
+
+.party-member-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.party-name {
+  color: #b8e3ff;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.party-member.me .party-name { color: var(--ink); }
+
+.party-crown { font-size: 11px; }
+
+.party-level {
+  font-size: 10px;
+  color: var(--ink-faint);
+  border: 1px solid var(--panel-edge);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.party-where {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.party-x {
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.party-x:hover { color: var(--bad); }
+
+.bar.party-hp { height: 7px; }
+
+.party-invite.frame {
+  position: absolute;
+  width: max-content;
+  left: 50%;
+  top: 170px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 18px;
+  pointer-events: auto;
+  font-size: 14px;
+  animation: window-in 160ms ease-out;
+}
+
+.party-invite.frame.small {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.party-actions { display: flex; gap: 8px; }
+
+.party-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.party-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #6cc6ff;
+  font-size: 12px;
+  text-shadow: 0 0 4px #000, 0 1px 1px #000;
+  animation: party-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes party-bob {
+  0%, 100% { margin-top: 0; }
+  50% { margin-top: -3px; }
+}
+
+.party-window {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.party-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.party-line > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.party-leave { align-self: flex-start; margin-top: 4px; }
+
+.party-tip { font-size: 11.5px; margin-top: 8px; }
