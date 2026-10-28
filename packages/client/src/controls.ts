@@ -245,6 +245,7 @@ export class Controls {
       if (d > maxDist) continue;
       const action = actionFor(entity, me.id);
       if (action.type !== 'interact' && action.type !== 'pickup') continue;
+      if (action.type === 'interact' && action.interaction.quickUse === false) continue;
       const rank = d + (action.type === 'pickup' ? 0.5 : 0);
       if (!best || rank < best.d) best = { entity, action, d: rank };
     }
