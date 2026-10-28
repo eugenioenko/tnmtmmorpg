@@ -1,0 +1,25 @@
+.town-snores {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.town-snore {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: italic 700 13px var(--font-title);
+  color: #e8f0ff;
+  text-shadow: 0 0 3px #000, 0 1px 2px #000;
+  letter-spacing: 1px;
+  animation: town-snore 2.4s ease-in-out infinite;
+}
+
+.town-snore span { font-size: 17px; }
+
+@keyframes town-snore {
+  0% { opacity: 0.45; margin-top: 4px; }
+  50% { opacity: 1; margin-top: -4px; }
+  100% { opacity: 0.45; margin-top: 4px; }
+}
