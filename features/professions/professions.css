@@ -97,3 +97,62 @@
   font-size: 11.5px;
   color: var(--ink-faint);
 }
+
+.debris-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.debris {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.chip {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 6px;
+  height: 4px;
+  opacity: 0;
+  animation-name: debris-burst;
+  animation-timing-function: linear;
+  animation-iteration-count: 1;
+  animation-fill-mode: both;
+}
+
+.chip.wood {
+  background: #c99a5b;
+  box-shadow: 0 0 0 1px #6b4423;
+}
+
+.chip.spark {
+  width: 4px;
+  height: 4px;
+  background: #fff3b0;
+  box-shadow: 0 0 4px 1px #ffb347;
+  border-radius: 50%;
+}
+
+@keyframes debris-burst {
+  0%,
+  78% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0deg);
+  }
+  80% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg);
+  }
+  92% {
+    opacity: 1;
+    transform: translate(var(--dx), var(--dy)) rotate(200deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(var(--dx) * 1.3), calc(var(--dy) * -0.2)) rotate(320deg);
+  }
+}
