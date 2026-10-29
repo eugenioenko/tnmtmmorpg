@@ -56,6 +56,8 @@ class Director {
   private layers: Layer[] = [];
   private readonly wind: Bed;
   private readonly surf: Bed;
+  private readonly rain: Bed;
+  private flash: number | undefined;
   private last = 0;
   private readonly listeners = new Set<() => void>();
 
@@ -63,6 +65,7 @@ class Director {
     this.e = createEngine(new AudioContext());
     this.wind = new Bed(this.e, this.e.ambience, 'wind');
     this.surf = new Bed(this.e, this.e.ambience, 'surf');
+    this.rain = new Bed(this.e, this.e.ambience, 'rain');
     this.applyMix();
   }
 
@@ -142,15 +145,30 @@ class Director {
       while (layer.next < now + 0.6) layer.next += layer.player.play(ZONES[layer.zone].score, layer.next, night);
     }
 
-    this.wind.set(zone.wind * (night ? 0.8 : 1));
+    const wx = me.components['weather:here'] as { sky?: string; amount?: number; flash?: number } | undefined;
+    const sky = this.zone === 'interior' || this.zone === 'cave' ? 'clear' : (wx?.sky ?? 'clear');
+    const amount = wx?.amount ?? 0;
+    const wet = sky === 'rain' || sky === 'storm';
+    const hushed = wet || sky === 'blizzard' || sky === 'dust';
+    const gust = sky === 'storm' || sky === 'blizzard' || sky === 'dust' ? 0.04 + amount * 0.05 : sky === 'snow' ? 0.02 : 0;
+    this.wind.set(zone.wind * (night ? 0.8 : 1) + gust);
     this.surf.set(world === OVERWORLD || world === 'water' ? water * 0.12 : 0);
+    this.rain.set(wet ? 0.02 + amount * 0.05 : 0);
     this.wind.update(now);
     this.surf.update(now);
+    this.rain.update(now);
+    if (wx) {
+      if (this.flash !== undefined && wx.flash && wx.flash !== this.flash) {
+        call(this.e, 'thunder', now + 0.4 + rand() * 2.2, this.e.ambience, 0.7 + rand() * 0.3);
+      }
+      this.flash = wx.flash ?? 0;
+    }
 
     if (dt > 0 && dt < 1) {
       for (const rule of zone.calls) {
         if (rule.when === 'day' && night) continue;
         if (rule.when === 'night' && !night) continue;
+        if (hushed && rule.call !== 'drip' && rule.call !== 'rumble' && rule.call !== 'crackle') continue;
         if (rand() < rule.rate * dt) call(this.e, rule.call, now + 0.05 + rand() * 0.3, this.e.ambience, 0.6 + rand() * 0.4);
       }
       const fire = this.fireNear(me);
