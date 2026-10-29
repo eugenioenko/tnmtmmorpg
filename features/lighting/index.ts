@@ -166,10 +166,15 @@ function warm(world: WorldAPI): void {
   }
 }
 
+const DOORWAY: LightComponent = { radius: 3.2, color: 0xffb862, flicker: 0.2, intensity: 0.75 };
+
 function kindle(world: WorldAPI): void {
   for (const e of world.queryNear(WORLD_CENTER_X, WORLD_CENTER_Y, 25, OVERWORLD)) {
     const glow = FIXTURES[e.kind];
     if (glow && e.components.light === undefined) world.update(e.id, { light: glow });
+  }
+  for (const door of world.query('door')) {
+    if (door.kind === 'buildings:door' && door.components.light === undefined) world.update(door.id, { light: DOORWAY });
   }
 }
 
