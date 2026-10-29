@@ -4,6 +4,7 @@ import { createEngine, rand, type Engine } from './engine.ts';
 import { Improviser } from './music.ts';
 import { Bed, call } from './ambience.ts';
 import { ZONES, zoneFor } from './zones.ts';
+import { effect, type Effect } from './sfx.ts';
 import './sound.css';
 
 export interface Mix {
@@ -179,6 +180,101 @@ class Director {
   }
 }
 
+interface Seen {
+  x: number;
+  y: number;
+  world: string;
+  level: number;
+  gold: number;
+  items: number;
+  work: number;
+  skill: string;
+  torch: boolean;
+  hp: Map<number, number>;
+}
+
+function count(e: EntityState): number {
+  const inv = e.components.inventory as { slots?: { count: number }[] } | undefined;
+  let n = 0;
+  for (const s of inv?.slots ?? []) n += s.count;
+  return n;
+}
+
+/**
+ * Turns snapshot-to-snapshot changes into sound: your steps on whatever
+ * ground you cross, swings landing on trees and veins, blows traded nearby,
+ * level-ups, coin and loot, a torch catching, a door or portal crossed.
+ */
+class Listener {
+  private seen: Seen | null = null;
+
+  constructor(
+    private readonly client: ClientAPI,
+    private readonly d: Director,
+  ) {}
+
+  private play(kind: Effect, vel = 1, ground?: string, delay = 0): void {
+    const ctx = this.d.e.ctx;
+    if ((ctx as AudioContext).state !== 'running') return;
+    effect(this.d.e, kind, ctx.currentTime + 0.02 + delay, vel, ground);
+  }
+
+  observe(): void {
+    const me = this.client.localPlayer();
+    if (!me) return;
+    const world = me.world ?? OVERWORLD;
+    const character = me.components.character as { gold?: number } | undefined;
+    const stats = me.components.stats as { level?: number } | undefined;
+    const work = me.components['professions:work'] as { n?: number; skill?: string } | undefined;
+    const hp = new Map<number, number>();
+    for (const e of this.client.entities()) {
+      const s = e.components.stats as { hp?: number } | undefined;
+      if (typeof s?.hp === 'number' && (e.world ?? OVERWORLD) === world) hp.set(e.id, s.hp);
+    }
+    const now: Seen = {
+      x: me.x,
+      y: me.y,
+      world,
+      level: stats?.level ?? 0,
+      gold: character?.gold ?? 0,
+      items: count(me),
+      work: work?.n ?? 0,
+      skill: work?.skill ?? '',
+      torch: me.components['lighting:held'] !== undefined,
+      hp,
+    };
+    const was = this.seen;
+    this.seen = now;
+    if (!was) return;
+
+    if (now.world !== was.world) {
+      this.play('travel');
+      return;
+    }
+    const moved = (now.x - was.x) * (now.x - was.x) + (now.y - was.y) * (now.y - was.y);
+    if (moved > 0 && moved <= 8) this.play('step', 1, this.client.tileAt(now.x, now.y));
+    const swing = was.skill === 'mining' ? 'mine' : 'chop';
+    if (was.work && now.work && now.work !== was.work) this.play(swing);
+    else if (was.work && !now.work && moved === 0) this.play(swing, 0.9);
+    if (now.level > was.level && was.level > 0) this.play('levelup');
+    if (now.gold > was.gold) this.play('coins');
+    else if (now.items > was.items) this.play('pickup');
+    if (now.torch && !was.torch) this.play('whoosh');
+
+    for (const [id, value] of now.hp) {
+      const before = was.hp.get(id);
+      if (before === undefined || value >= before) continue;
+      const e = this.client.entity(id);
+      if (!e) continue;
+      const d2 = (e.x - me.x) * (e.x - me.x) + (e.y - me.y) * (e.y - me.y);
+      if (d2 > 144) continue;
+      const vel = 1 - d2 / 160;
+      if (id === me.id) this.play('hurt');
+      else this.play(value <= 0 ? 'fall' : 'hit', vel);
+    }
+  }
+}
+
 let director: Director | null = null;
 const waiting = new Set<() => void>();
 
@@ -199,6 +295,7 @@ function useDirector(): Director | null {
 function SoundHost({ client }: { client: ClientAPI }) {
   useEffect(() => {
     let timer = 0;
+    let unsubscribe: (() => void) | null = null;
     const start = (): void => {
       if (!director) {
         try {
@@ -208,6 +305,8 @@ function SoundHost({ client }: { client: ClientAPI }) {
         }
         for (const fn of waiting) fn();
         timer = window.setInterval(() => director?.tick(), 200);
+        const ears = new Listener(client, director);
+        unsubscribe = client.subscribe(() => ears.observe());
       }
       const ctx = director.e.ctx as AudioContext;
       if (ctx.state === 'suspended') void ctx.resume();
@@ -218,6 +317,7 @@ function SoundHost({ client }: { client: ClientAPI }) {
       window.removeEventListener('pointerdown', start);
       window.removeEventListener('keydown', start);
       window.clearInterval(timer);
+      unsubscribe?.();
     };
   }, [client]);
   return null;
