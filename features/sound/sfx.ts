@@ -12,7 +12,9 @@ export type Effect =
   | 'coins'
   | 'pickup'
   | 'whoosh'
-  | 'travel';
+  | 'travel'
+  | 'plop'
+  | 'splash';
 
 /** Footstep colour by ground: [filter, centre Hz, length, level]. */
 const GROUND: Record<string, [BiquadFilterType, number, number, number]> = {
@@ -126,6 +128,24 @@ export function effect(e: Engine, kind: Effect, t: number, vel = 1, ground = 'gr
       bp.frequency.exponentialRampToValueAtTime(1800, t + 0.3);
       g.connect(bp);
       out(e, bp, bus, 0.2);
+      break;
+    }
+    case 'plop': {
+      const g = envelope(e, t, 0.003, 0.14 * vel, 0.09);
+      const osc = tone(e, 'sine', 420 + rand() * 120, t, 0.12, g);
+      osc.frequency.exponentialRampToValueAtTime(1100, t + 0.06);
+      out(e, g, bus, 0.25);
+      break;
+    }
+    case 'splash': {
+      const g = envelope(e, t, 0.01, 0.22 * vel, 0.45);
+      noiseBurst(e, t, 0.5, g);
+      const bp = filter(e, 'bandpass', 1400, 0.7);
+      bp.frequency.setValueAtTime(2200, t);
+      bp.frequency.exponentialRampToValueAtTime(600, t + 0.4);
+      g.connect(bp);
+      out(e, bp, bus, 0.3);
+      for (let i = 0; i < 4; i++) effect(e, 'plop', t + 0.05 + rand() * 0.3, vel * 0.5);
       break;
     }
     case 'travel': {
