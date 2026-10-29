@@ -4,7 +4,7 @@ import { isStatsComponent } from '@game/shared';
 import { emojiForItem, emojiForKind, emojiTexture } from '../emoji-atlas.ts';
 import { getItemDef } from '../items.ts';
 import { TILE_SIZE } from './tilemap.ts';
-import { entityAppearance, paintEntityArt, type ArtState } from '../art.ts';
+import { entityAppearance, isTreeArt, paintEntityArt, type ArtState } from '../art.ts';
 
 /** Fallback palette when an entity has no player component with a color. */
 const FALLBACK_COLORS = ['#c0392b', '#2980b9', '#27ae60', '#f39c12', '#8e44ad', '#16a085'];
@@ -67,6 +67,8 @@ interface RenderEntity {
   lastHp: number | null;
   lastLevel: number | null;
   actor: boolean;
+  /** Drawn as a tree: a broad shadow, and see-through while you stand behind it. */
+  tree: boolean;
 }
 
 interface FloatingText {
@@ -99,6 +101,13 @@ function entityColor(entity: EntityState): string {
 
 function colorToInt(hex: string): number {
   return parseInt(hex.slice(1), 16);
+}
+
+/** The player stands behind the tree's canopy, a little above its trunk. */
+function hides(tree: RenderEntity, player: RenderEntity): boolean {
+  const dx = player.visX - tree.visX;
+  const dy = tree.visY - player.visY;
+  return dy > 0.3 && dy < 3.2 && dx > -1.3 && dx < 1.3;
 }
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -139,6 +148,8 @@ export class EntityRenderer {
         render.rect.ellipse(16, 24, 13, 6).stroke({ width: 1, color: render.marker });
       } else if (render.actor) {
         render.rect.ellipse(16, 28, 10, 4).fill({ color: 0x000000, alpha: 0.22 });
+      } else if (render.tree) {
+        render.rect.ellipse(16, 28, 26, 8).fill({ color: 0x0b1a0c, alpha: 0.28 });
       }
       if (isLocal) render.rect.ellipse(16, 28, 12, 5).stroke({ width: 1.5, color: 0xffefb0 });
       return;
@@ -269,6 +280,7 @@ export class EntityRenderer {
         entity.kind === 'player' ||
         entity.kind === 'npc' ||
         Boolean(entityAppearance(entity)?.creature ?? entityAppearance(entity)?.character),
+      tree: isTreeArt(entity),
     };
     render.textured = paintEntityArt(emoji, entity, render.art, now);
     const label = entity.components.label;
@@ -400,6 +412,7 @@ export class EntityRenderer {
     now: number,
     dtMs: number,
   ): void {
+    const local = this.localEntityId === null ? undefined : this.entities.get(this.localEntityId);
     for (const render of this.entities.values()) {
       const target = targets.get(render.id);
       if (!target) {
@@ -452,6 +465,11 @@ export class EntityRenderer {
       const entity = byId.get(render.id);
       if (entity) {
         paintEntityArt(render.emoji, entity, render.art, now);
+        const tree = isTreeArt(entity);
+        if (tree !== render.tree) {
+          render.tree = tree;
+          this.paintRect(render, render.id === this.localEntityId);
+        }
         const label = entity.components.label;
         if (render.nameLabel && typeof label === 'string' && render.nameLabel.text !== label) {
           render.nameLabel.text = label;
@@ -460,6 +478,7 @@ export class EntityRenderer {
       render.lastUpdate = now;
       render.container.position.set(render.visX * TILE_SIZE, render.visY * TILE_SIZE);
       render.container.zIndex = render.visY * TILE_SIZE + (render.kind === 'item' ? -1 : 0);
+      render.emoji.alpha = local && render.tree && hides(render, local) ? 0.5 : 1;
     }
 
     for (const [id, target] of targets) {

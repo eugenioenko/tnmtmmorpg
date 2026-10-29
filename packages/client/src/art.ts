@@ -17,9 +17,37 @@ export async function loadArt(): Promise<void> {
   try {
     source = await Assets.load<Texture>(atlasUrl);
     source.source.scaleMode = 'nearest';
+    bakeStump(source);
   } catch (error) {
     console.error('Temporary artwork failed to load; using the original graphics.', error);
   }
+}
+
+/** A felled tree: the roots of the tree art with a fresh-cut face on top. */
+function bakeStump(atlasTexture: Texture): void {
+  const image = atlasTexture.source.resource as CanvasImageSource;
+  const [x, y] = frames['objects/tree'];
+  const canvas = document.createElement('canvas');
+  canvas.width = 36;
+  canvas.height = 21;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, x + 6, y + 47, 36, 17, 0, 4, 36, 17);
+  const face = (rx: number, ry: number, color: string, cy = 5): void => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(17.5, cy, rx, ry, 0, 0, 6.2832);
+    ctx.fill();
+  };
+  face(10, 4, '#4a2f18', 6);
+  face(9, 3.2, '#dcae6c');
+  face(5.5, 1.8, '#b98446');
+  face(2.5, 0.8, '#e8c486');
+  const texture = Texture.from(canvas);
+  texture.source.scaleMode = 'nearest';
+  textures.set('objects/tree-stump', texture);
+  frames['objects/tree-stump'] = [0, 0, 36, 21, 0, 0];
 }
 
 export function artTexture(name: string): Texture | undefined {
@@ -194,6 +222,43 @@ export function itemFrame(itemId: string): PortraitFrame | undefined {
   return { url: atlasUrl, x: rect[0], y: rect[1], w: rect[2], h: rect[3] };
 }
 
+/** Whether an entity is drawn as a tree (and so grows, sways and casts a wide shadow). */
+export function isTreeArt(entity: EntityState): boolean {
+  const appearance = entityAppearance(entity);
+  if (appearance?.emoji) return false;
+  return (appearance?.frame ?? OBJECTS[entity.kind]) === 'objects/tree';
+}
+
+const TREE_TINTS = [0xffffff, 0xeaf6dc, 0xf4ffe6, 0xdcefcf, 0xfff0d2, 0xe4f0e8];
+
+function scramble(id: number, salt: number): number {
+  let h = (id * 2654435761 + salt * 40503) | 0;
+  h = ((h >>> 16) ^ h) * 0x45d9f3b;
+  h = ((h >>> 16) ^ h) * 0x45d9f3b;
+  return (((h >>> 16) ^ h) >>> 0) / 4294967296;
+}
+
+/** A sine-like swing in -1..1 with period 1. */
+function swing(t: number): number {
+  const p = t - (t | 0);
+  const tri = 4 * (p < 0.5 ? 0.5 - p : p - 0.5) - 1;
+  return tri * (1.5 - 0.5 * tri * tri);
+}
+
+/**
+ * Trees are drawn larger than their source art, each a little different in
+ * size and leaf colour, rooted at the tile and leaning with the wind.
+ */
+function paintTree(sprite: Sprite, entity: EntityState, scale: number, tinted: boolean, now: number): void {
+  const grown = scale * (1.5 + scramble(entity.id, 1) * 0.45);
+  sprite.anchor.set(0.5, 1);
+  sprite.scale.set(scramble(entity.id, 2) < 0.5 ? -grown : grown, grown);
+  sprite.position.set(16, 30);
+  if (!tinted) sprite.tint = TREE_TINTS[(scramble(entity.id, 3) * TREE_TINTS.length) | 0];
+  const gust = 0.5 + 0.5 * swing(now / 9000 + entity.x * 0.013);
+  sprite.skew.set(0.035 * gust * swing(now / 2600 + scramble(entity.id, 4)), 0);
+}
+
 /** Update art without creating textures, sprites, or canvases every frame. */
 export function paintEntityArt(
   sprite: Sprite,
@@ -211,6 +276,7 @@ export function paintEntityArt(
     if (sprite.texture !== texture) sprite.texture = texture;
     sprite.tint = 0xffffff;
     sprite.anchor.set(0, 0);
+    sprite.skew.set(0, 0);
     sprite.scale.set(size / texture.width);
     sprite.position.set(16 - size / 2, 30 - size);
     return true;
@@ -248,7 +314,12 @@ export function paintEntityArt(
   } else {
     sprite.tint = appearance?.tint ?? 0xffffff;
   }
+  if (name === 'objects/tree') {
+    paintTree(sprite, entity, scale, appearance?.tint !== undefined, now);
+    return true;
+  }
   sprite.anchor.set(0, 0);
+  sprite.skew.set(0, 0);
   sprite.scale.set(mirror ? -scale : scale, scale);
   const [, , w, h, ox, oy] = frames[name] as Frame;
   if (appearance?.frame) {

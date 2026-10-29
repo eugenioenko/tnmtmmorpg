@@ -40,6 +40,9 @@ export interface Work {
   n: number;
   label: string;
   ms: number;
+  /** What is being worked, for the chips and sparks other players see. */
+  target?: number;
+  skill?: Skill;
 }
 
 interface Resource {
@@ -172,7 +175,18 @@ let clock = 0;
 let workSeq = 0;
 const gathering = new Map<number, Gathering>();
 /** Ordinary trees belong to the nature feature, so their felling is tracked here, not on them. */
-const pineRegrow = new Map<number, { charges: number; regrowAt: number }>();
+/** Swings left in each ordinary tree being worked; a tree with none left is felled. */
+const pineCharges = new Map<number, number>();
+
+/** A felled tree: a stump until `sapling`, a sapling until `grown` (epoch ms, so it survives restarts). */
+interface Felled {
+  sapling: number;
+  grown: number;
+}
+
+const FELLED = 'professions:felled';
+const STUMP_MS = 90_000;
+const SAPLING_MS = 90_000;
 
 const floor = (n: number): number => n | 0;
 const cheb = (a: { x: number; y: number }, b: { x: number; y: number }): number => {
@@ -207,8 +221,7 @@ function nodeOf(e: EntityState | undefined): NodeComponent | undefined {
 /** What a target yields, and whether it has anything left. */
 function resourceAt(target: EntityState): { resource: Resource; ready: boolean } | undefined {
   if (target.kind === 'nature:tree') {
-    const state = pineRegrow.get(target.id);
-    return { resource: RESOURCES.pine, ready: !state || state.charges > 0 || clock >= state.regrowAt };
+    return { resource: RESOURCES.pine, ready: target.components[FELLED] === undefined };
   }
   const node = nodeOf(target);
   const resource = node ? RESOURCES[node.resource] : undefined;
@@ -256,6 +269,8 @@ function begin(world: WorldAPI, me: EntityState, target: EntityState, resource: 
       n,
       label: `${resource.skill === 'mining' ? 'Mining' : 'Chopping'} ${resource.name}`,
       ms: ticks * 100,
+      target: target.id,
+      skill: resource.skill,
     } satisfies Work,
   });
 }
@@ -284,11 +299,18 @@ function unlockNote(skill: Skill, level: number): string {
 
 function spend(world: WorldAPI, target: EntityState, resource: Resource): boolean {
   if (target.kind === 'nature:tree') {
-    const state = pineRegrow.get(target.id);
-    const fresh = !state || (state.charges <= 0 && clock >= state.regrowAt);
-    const charges = (fresh ? between(world, resource.charges) : state.charges) - 1;
-    pineRegrow.set(target.id, { charges, regrowAt: clock + resource.regrow });
-    return charges > 0;
+    const charges = (pineCharges.get(target.id) ?? between(world, resource.charges)) - 1;
+    if (charges > 0) {
+      pineCharges.set(target.id, charges);
+      return true;
+    }
+    pineCharges.delete(target.id);
+    const now = Date.now();
+    world.update(target.id, {
+      [FELLED]: { sapling: now + STUMP_MS, grown: now + STUMP_MS + SAPLING_MS } satisfies Felled,
+      appearance: { frame: 'objects/tree-stump', scale: 1.5 },
+    });
+    return false;
   }
   const node = nodeOf(target);
   if (!node) return false;
@@ -333,11 +355,12 @@ function tickGathering(world: WorldAPI): void {
 }
 
 function nodeLook(resource: Resource, ready: boolean): Record<string, unknown> {
-  const frame = resource.skill === 'mining' ? 'objects/small-rock' : 'objects/tree';
-  const scale = resource.skill === 'mining' ? 1.5 : 1;
+  const mining = resource.skill === 'mining';
+  const frame = mining ? 'objects/small-rock' : ready ? 'objects/tree' : 'objects/tree-stump';
+  const scale = mining || !ready ? 1.5 : 1;
   return {
     label: ready ? resource.name : `${resource.name} (spent)`,
-    appearance: { frame, scale, tint: ready ? resource.tint : 0x55504a },
+    appearance: { frame, scale, tint: ready ? resource.tint : mining ? 0x55504a : 0xffffff },
   };
 }
 
@@ -368,7 +391,16 @@ function regrow(world: WorldAPI, step: number): void {
       ...nodeLook(resource, true),
     });
   }
-  for (const [id, state] of pineRegrow) if (clock >= state.regrowAt && !world.get(id)) pineRegrow.delete(id);
+  const now = Date.now();
+  for (const tree of world.query(FELLED)) {
+    const felled = tree.components[FELLED] as Felled;
+    if (now >= felled.grown) {
+      world.update(tree.id, { [FELLED]: undefined, appearance: undefined });
+    } else if (now >= felled.sapling && (tree.components.appearance as { frame?: string } | undefined)?.frame !== 'objects/tree') {
+      world.update(tree.id, { appearance: { frame: 'objects/tree', scale: 0.5 } });
+    }
+  }
+  for (const id of pineCharges.keys()) if (!world.get(id)) pineCharges.delete(id);
 }
 
 /** Which ore or timber a spot offers: richer further from the village. */
