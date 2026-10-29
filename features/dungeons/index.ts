@@ -37,6 +37,8 @@ export interface DungeonStatus {
   cleared: boolean;
   copy: number;
   looted: boolean;
+  /** Torches line this cave's walls; the rest are dark but for crystals. */
+  lit: boolean;
 }
 
 interface Instance {
@@ -277,12 +279,64 @@ function prepare(world: WorldAPI, inst: Instance): void {
       return;
     case 'populate': {
       const layout = layouts.get(key);
-      if (layout) populate(world, inst, layout);
+      if (layout) {
+        populate(world, inst, layout);
+        illuminate(world, inst, layout);
+      }
       inst.stage = 'ready';
       return;
     }
   }
 }
+
+/** Roughly two caves in five have someone keeping the torches burning. */
+function isLit(x: number, y: number): boolean {
+  return hash(x + 17, y - 31) % 5 < 2;
+}
+
+/** Wall torches along the passages of a lit cave, and glowing crystals in every cave. */
+function illuminate(world: WorldAPI, inst: Instance, layout: Layout): void {
+  const floorAt = new Set(layout.tiles.map((t) => cell(t.x, t.y)));
+  const byWall = layout.tiles.filter(
+    (t) => !floorAt.has(cell(t.x, t.y - 1)) && floorAt.has(cell(t.x, t.y + 1)),
+  );
+  const placed: Spot[] = [];
+  const place = (pool: Spot[], spacing: number, max: number, make: (t: Spot) => void): void => {
+    for (let attempt = 0; attempt < 400 && max > 0; attempt++) {
+      const t = pool[floor(world.rng() * pool.length)];
+      if (!t || placed.some((p) => cheb(p, t) < spacing)) continue;
+      placed.push(t);
+      make(t);
+      max--;
+    }
+  };
+  if (isLit(inst.ex, inst.ey)) {
+    place(byWall, 6, 40, (t) => {
+      inst.own.push(
+        world.spawn(
+          'dungeons:sconce',
+          { x: t.x, y: t.y },
+          { appearance: { emoji: '🔥', scale: 0.55 }, light: { radius: 4.5, flicker: 0.6 } },
+          inst.id,
+        ),
+      );
+    });
+  }
+  const deep = layout.tiles.filter((t) => t.d >= 8);
+  place(deep, 9, 10, (t) => {
+    const hue = CRYSTAL_HUES[floor(world.rng() * CRYSTAL_HUES.length)];
+    inst.own.push(
+      world.spawn(
+        'dungeons:crystal',
+        { x: t.x, y: t.y },
+        { appearance: { emoji: '💎', scale: 0.7 }, light: { radius: 2.6, color: hue, intensity: 0.7 } },
+        inst.id,
+      ),
+    );
+  });
+}
+
+const CRYSTAL_HUES = [0x6fd8ff, 0xb48cff, 0x7dffc4];
 
 function guardianOf(x: number, y: number): readonly [string, string] {
   return GUARDIANS[hash(x, y) % GUARDIANS.length];
@@ -309,6 +363,7 @@ function status(inst: Instance, playerId: number): DungeonStatus {
     cleared: inst.cleared,
     copy: inst.copy + 1,
     looted: inst.looted.has(playerId),
+    lit: isLit(inst.ex, inst.ey),
   };
 }
 
@@ -510,7 +565,7 @@ export default definePlugin({
   id: 'dungeons',
   items: ITEMS,
   recipes: [],
-  entityKinds: ['dungeons:entrance', 'dungeons:exit', 'dungeons:chest'],
+  entityKinds: ['dungeons:entrance', 'dungeons:exit', 'dungeons:chest', 'dungeons:sconce', 'dungeons:crystal'],
   systems: [{ name: 'dungeons:tick', fn: tick }],
   commands: [
     { name: 'dungeons:enter', fn: (world, args, id) => enter(world, id, args) },

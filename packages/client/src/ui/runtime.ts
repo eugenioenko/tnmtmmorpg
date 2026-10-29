@@ -62,6 +62,7 @@ export class HudRuntime {
       target: () => controls.view.targetId,
       toggleWindow: (id, open) => this.toggle(id, open),
       banner: (text, sub, kind) => this.showBanner(text, kind ?? 'info', sub),
+      setDarkness: (source, level, tint) => game.setDarkness(source, level, tint),
     };
   }
 

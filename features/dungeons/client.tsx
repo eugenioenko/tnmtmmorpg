@@ -31,10 +31,13 @@ function DungeonTracker({ client }: { client: ClientAPI }) {
   );
 }
 
-/** Caves are dark: a soft vignette whenever you are underground. */
+/** Caves are dark: only torches, crystals and your own faint glow show the way. */
 function CaveGloom({ client }: { client: ClientAPI }) {
   const s = useStatus(client);
-  return s ? <div className="cave-gloom" /> : null;
+  const lit = s?.lit ?? false;
+  useEffect(() => client.setDarkness('dungeons', s ? (lit ? 0.8 : 0.94) : 0, 0x050308), [client, s, lit]);
+  useEffect(() => () => client.setDarkness('dungeons', 0), [client]);
+  return null;
 }
 
 export default defineClient({

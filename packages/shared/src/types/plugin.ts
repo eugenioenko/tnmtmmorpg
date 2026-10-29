@@ -312,6 +312,12 @@ export interface ClientAPI {
   toggleWindow(id: string, open?: boolean): void;
   /** A large centred announcement that fades by itself. */
   banner(text: string, sub?: string, kind?: 'level' | 'death' | 'info'): void;
+  /**
+   * How dark the world is drawn, 0..1, on behalf of `source`. The darkest
+   * source wins, so night and caves can each set their own without racing;
+   * `light` components cut through it. `tint` colours the dark.
+   */
+  setDarkness(source: string, level: number, tint?: number): void;
 }
 
 export interface ClientWindow {

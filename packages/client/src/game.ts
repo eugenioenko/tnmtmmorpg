@@ -8,11 +8,13 @@ import {
   TILE_SIZE,
   WALKABLE_TILES,
   isCarvedWorld,
+  isLightComponent,
   resolveWorld,
 } from '@game/shared';
 import { Camera } from './camera.ts';
 import { EntityRenderer, type EntityPointer } from './renderer/entities.ts';
 import { TilemapRenderer } from './renderer/tilemap.ts';
+import { LightingRenderer, WARM_LIGHT, type ScreenLight } from './renderer/lighting.ts';
 import { loadArt } from './art.ts';
 
 export { TILE_SIZE } from './renderer/tilemap.ts';
@@ -94,6 +96,8 @@ export class Game {
   private readonly renderer: EntityRenderer;
   private readonly tilemap: TilemapRenderer;
   private readonly camera: Camera;
+  private readonly lighting: LightingRenderer;
+  private readonly lights: ScreenLight[] = [];
   private frameCount = 0;
   private fpsWindowMs = 0;
   private readonly app: Application;
@@ -123,6 +127,7 @@ export class Game {
     this.tilemap = new TilemapRenderer(tileLayer);
     this.renderer = new EntityRenderer(entityLayer);
     this.camera = new Camera();
+    this.lighting = new LightingRenderer(app.renderer, app.stage);
     this.state = {
       tick: 0,
       entityCount: 0,
@@ -289,6 +294,39 @@ export class Game {
     // The camera advanced at the top of the frame (the tilemap is drawn
     // around it); apply its offset to the whole world layer.
     this.worldLayer.position.set(-this.camera.x, -this.camera.y);
+
+    if (this.lighting.dark > 0.01) this.collectLights(latest.snapshot.entities);
+    this.lighting.update(viewW, viewH, this.lights, now);
+  }
+
+  /**
+   * Every `light` component on screen, plus a faint glow of the local
+   * player's own so the darkest cave never hides where you stand.
+   */
+  private collectLights(entities: readonly EntityState[]): void {
+    this.lights.length = 0;
+    for (const entity of entities) {
+      const light = entity.components.light;
+      const own = entity.id === this.localEntityId;
+      if (!isLightComponent(light) && !own) continue;
+      const at = this.renderer.tileCenter(entity.id);
+      if (!at) continue;
+      const lit = isLightComponent(light);
+      this.lights.push({
+        x: at.x - this.camera.x,
+        y: at.y - this.camera.y,
+        radius: lit ? light.radius : 2.2,
+        color: lit ? (light.color ?? WARM_LIGHT) : 0xb8c4ff,
+        flicker: lit ? (light.flicker ?? 0) : 0,
+        intensity: lit ? (light.intensity ?? 1) : 0.55,
+        seed: entity.id,
+      });
+    }
+  }
+
+  /** See ClientAPI.setDarkness. */
+  setDarkness(source: string, level: number, tint?: number): void {
+    this.lighting.setDarkness(source, level, tint);
   }
 
   /**

@@ -36,10 +36,3 @@
   color: var(--ink-faint);
 }
 
-.cave-gloom {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(ellipse 58% 62% at 50% 50%, rgba(0, 0, 0, 0) 45%, rgba(4, 3, 2, 0.55) 80%, rgba(0, 0, 0, 0.82) 100%);
-}
