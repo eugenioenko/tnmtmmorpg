@@ -324,6 +324,10 @@ export class Game {
     }
   }
 
+  darkness(): number {
+    return this.lighting.dark;
+  }
+
   /** See ClientAPI.setDarkness. */
   setDarkness(source: string, level: number, tint?: number): void {
     this.lighting.setDarkness(source, level, tint);
