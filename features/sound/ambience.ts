@@ -9,7 +9,8 @@ export type Call =
   | 'drip'
   | 'crackle'
   | 'gull'
-  | 'rumble';
+  | 'rumble'
+  | 'thunder';
 
 /** A one-off sound out in the world, scheduled at `t`. */
 export function call(e: Engine, kind: Call, t: number, bus: AudioNode, vel = 1): void {
@@ -98,6 +99,23 @@ export function call(e: Engine, kind: Call, t: number, bus: AudioNode, vel = 1):
       out(e, bp, bus, 0.4);
       break;
     }
+    case 'thunder': {
+      const crack = envelope(e, t, 0.004, 0.35 * vel, 0.35);
+      noiseBurst(e, t, 0.4, crack);
+      const hp = filter(e, 'bandpass', 1600, 0.6);
+      crack.connect(hp);
+      out(e, hp, bus, 0.6);
+      const roll = e.ctx.createGain();
+      roll.gain.setValueAtTime(0.0001, t);
+      roll.gain.linearRampToValueAtTime(1.1 * vel, t + 0.25);
+      for (let i = 1; i < 6; i++) roll.gain.linearRampToValueAtTime((0.4 + rand() * 0.6) * vel, t + 0.25 + i * (0.35 + rand() * 0.3));
+      roll.gain.exponentialRampToValueAtTime(0.0001, t + 5.5);
+      noiseBurst(e, t, 5.6, roll);
+      const lp = filter(e, 'lowpass', 160, 0.8);
+      roll.connect(lp);
+      out(e, lp, bus, 0.5);
+      break;
+    }
     case 'rumble': {
       const g = envelope(e, t, 0.6, 0.18 * vel, 2.2);
       noiseBurst(e, t, 3, g);
@@ -110,7 +128,7 @@ export function call(e: Engine, kind: Call, t: number, bus: AudioNode, vel = 1):
 }
 
 /**
- * A continuous bed of filtered noise (wind, surf), whose level and colour
+ * A continuous bed of filtered noise (wind, surf, rain), whose level and colour
  * drift every few seconds so it never sounds like a loop. `set` glides to a
  * new level; zero lets it fall silent.
  */
@@ -123,12 +141,13 @@ export class Bed {
   constructor(
     e: Engine,
     bus: AudioNode,
-    private readonly kind: 'wind' | 'surf',
+    private readonly kind: 'wind' | 'surf' | 'rain',
   ) {
     const src = e.ctx.createBufferSource();
     src.buffer = e.noise;
     src.loop = true;
-    this.band = kind === 'wind' ? filter(e, 'bandpass', 500, 0.8) : filter(e, 'lowpass', 600, 0.5);
+    this.band =
+      kind === 'wind' ? filter(e, 'bandpass', 500, 0.8) : kind === 'rain' ? filter(e, 'bandpass', 2400, 0.35) : filter(e, 'lowpass', 600, 0.5);
     this.gain = e.ctx.createGain();
     this.gain.gain.value = 0;
     src.connect(this.band).connect(this.gain).connect(bus);
@@ -143,14 +162,15 @@ export class Bed {
   update(t: number): void {
     if (t < this.nextDrift) return;
     const surf = this.kind === 'surf';
+    const rain = this.kind === 'rain';
     const span = surf ? 3 + rand() * 4 : 2 + rand() * 3;
     this.nextDrift = t + span;
-    const swell = surf ? 0.35 + rand() * 0.65 : 0.55 + rand() * 0.45;
+    const swell = surf ? 0.35 + rand() * 0.65 : rain ? 0.85 + rand() * 0.15 : 0.55 + rand() * 0.45;
     this.gain.gain.cancelScheduledValues(t);
     this.gain.gain.setValueAtTime(this.gain.gain.value, t);
     this.gain.gain.linearRampToValueAtTime(this.level * swell, t + span * 0.6);
     if (surf) this.gain.gain.linearRampToValueAtTime(this.level * 0.25, t + span);
-    const f = surf ? 400 + rand() * 500 : 300 + rand() * 700;
+    const f = surf ? 400 + rand() * 500 : rain ? 1900 + rand() * 1200 : 300 + rand() * 700;
     this.band.frequency.cancelScheduledValues(t);
     this.band.frequency.setValueAtTime(this.band.frequency.value, t);
     this.band.frequency.linearRampToValueAtTime(f, t + span);
