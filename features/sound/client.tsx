@@ -208,7 +208,14 @@ interface Seen {
   work: number;
   skill: string;
   torch: boolean;
+  line: string;
+  caught: number;
   hp: Map<number, number>;
+}
+
+function lineState(e: EntityState): string {
+  const line = e.components['fishing:line'] as { biting?: boolean } | undefined;
+  return !line ? 'none' : line.biting ? 'bite' : 'wait';
 }
 
 function count(e: EntityState): number {
@@ -221,7 +228,8 @@ function count(e: EntityState): number {
 /**
  * Turns snapshot-to-snapshot changes into sound: your steps on whatever
  * ground you cross, swings landing on trees and veins, blows traded nearby,
- * level-ups, coin and loot, a torch catching, a door or portal crossed.
+ * level-ups, coin and loot, a torch catching, a door or portal crossed, a
+ * line cast, a bite and a catch.
  */
 class Listener {
   private seen: Seen | null = null;
@@ -259,6 +267,8 @@ class Listener {
       work: work?.n ?? 0,
       skill: work?.skill ?? '',
       torch: me.components['lighting:held'] !== undefined,
+      line: lineState(me),
+      caught: (me.components['fishing:caught'] as { at?: number } | undefined)?.at ?? 0,
       hp,
     };
     const was = this.seen;
@@ -278,6 +288,14 @@ class Listener {
     if (now.gold > was.gold) this.play('coins');
     else if (now.items > was.items) this.play('pickup');
     if (now.torch && !was.torch) this.play('whoosh');
+    if (now.line === 'wait' && was.line === 'none') {
+      this.play('whoosh', 0.5);
+      this.play('plop', 1, undefined, 0.45);
+    } else if (now.line === 'bite' && was.line !== 'bite') {
+      this.play('plop', 1.2);
+      this.play('plop', 0.9, undefined, 0.12);
+    }
+    if (now.caught > was.caught) this.play('splash');
 
     for (const [id, value] of now.hp) {
       const before = was.hp.get(id);
