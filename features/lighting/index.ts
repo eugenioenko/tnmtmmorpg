@@ -143,6 +143,7 @@ let clock = 0;
 function burn(world: WorldAPI): void {
   const now = Date.now();
   for (const p of world.query('lighting:held')) {
+    if (p.components['lighting:held'] === undefined) continue;
     const held = heldOf(p.components['lighting:held']);
     if (!held || held.until <= now) {
       world.update(p.id, { 'lighting:held': undefined, light: undefined });

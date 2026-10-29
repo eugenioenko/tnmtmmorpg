@@ -393,7 +393,8 @@ function regrow(world: WorldAPI, step: number): void {
   }
   const now = Date.now();
   for (const tree of world.query(FELLED)) {
-    const felled = tree.components[FELLED] as Felled;
+    const felled = tree.components[FELLED] as Felled | undefined;
+    if (!felled) continue;
     if (now >= felled.grown) {
       world.update(tree.id, { [FELLED]: undefined, appearance: undefined });
     } else if (now >= felled.sapling && (tree.components.appearance as { frame?: string } | undefined)?.frame !== 'objects/tree') {

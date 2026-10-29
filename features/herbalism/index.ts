@@ -385,8 +385,8 @@ function regrow(world: WorldAPI): void {
     world.update(e.id, { 'herbalism:herb': { herb: herb.id }, ...look(herb, true) });
   }
   for (const p of world.query('herbalism:night_eye')) {
-    const until = (p.components['herbalism:night_eye'] as { until?: number }).until ?? 0;
-    if (until > now) continue;
+    const eye = p.components['herbalism:night_eye'] as { until?: number } | undefined;
+    if (!eye || (eye.until ?? 0) > now) continue;
     world.update(p.id, { 'herbalism:night_eye': undefined, light: undefined });
     say(world, p.id, 'Your night eyes fade.');
   }
