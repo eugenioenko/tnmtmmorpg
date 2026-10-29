@@ -107,3 +107,28 @@ export interface StatsComponent {
   def: number; // base defense
   level: number;
 }
+
+// ── Light ───────────────────────────────────────────────────────────────────
+
+/**
+ * A light source. Any entity carrying a public `light` component cuts a soft
+ * hole in the client's darkness (night, caves) and casts a coloured glow.
+ */
+export interface LightComponent {
+  /** Reach in tiles. */
+  radius: number;
+  /** Glow colour; warm torchlight when omitted. */
+  color?: number;
+  /** 0 steady .. 1 wild; fires flicker, crystals do not. */
+  flicker?: number;
+  /** 0..1, how much darkness it clears at its centre. Default 1. */
+  intensity?: number;
+}
+
+export function isLightComponent(value: unknown): value is LightComponent {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as LightComponent).radius === 'number'
+  );
+}

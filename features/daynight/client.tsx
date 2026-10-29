@@ -26,15 +26,13 @@ export function darkness(minute: number): number {
 
 function NightShade({ client }: { client: ClientAPI }) {
   const t = useTime(client);
-  if (!t || !outdoors(client)) return null;
-  const d = darkness(t.minute);
+  const out = outdoors(client);
+  const d = t && out ? darkness(t.minute) : 0;
+  useEffect(() => client.setDarkness('daynight', d * 0.86, 0x080c26), [client, d]);
+  useEffect(() => () => client.setDarkness('daynight', 0), [client]);
+  if (!t || !out) return null;
   const dusk = t.minute >= 17 * 60 && t.minute < 20 * 60 ? 1 : 0;
-  return (
-    <>
-      <div className="daynight-shade" style={{ opacity: d * 0.62 }} />
-      <div className="daynight-dusk" style={{ opacity: dusk * (1 - d) * 0.35 }} />
-    </>
-  );
+  return <div className="daynight-dusk" style={{ opacity: dusk * (1 - d) * 0.35 }} />;
 }
 
 function phase(minute: number): [string, string] {

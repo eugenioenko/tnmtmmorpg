@@ -1,15 +1,9 @@
-.daynight-shade,
 .daynight-dusk {
   position: absolute;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   transition: opacity 20s linear;
-}
-
-.daynight-shade {
-  background: radial-gradient(ellipse 70% 70% at 50% 50%, #0c1638 0%, #050a1e 100%);
-  mix-blend-mode: multiply;
 }
 
 .daynight-dusk {
