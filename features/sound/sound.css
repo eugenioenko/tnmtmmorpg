@@ -1,0 +1,31 @@
+.sound-panel {
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sound-now {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.sound-now b {
+  color: var(--gold-hi);
+}
+
+.sound-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  align-items: center;
+  font-size: 12px;
+}
+
+.sound-row input {
+  accent-color: #d9a54a;
+}
+
+.sound-mute {
+  align-self: flex-start;
+}
