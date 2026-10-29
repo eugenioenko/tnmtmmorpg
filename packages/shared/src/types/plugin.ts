@@ -318,6 +318,12 @@ export interface ClientAPI {
    * `light` components cut through it. `tint` colours the dark.
    */
   setDarkness(source: string, level: number, tint?: number): void;
+  /** How dark the world is drawn right now, 0..1 (the darkest source). */
+  darkness(): number;
+  /** Terrain kind of a tile in the current world, as far as this client knows. */
+  tileAt(x: number, y: number): string;
+  /** HUD overlay pixel of a tile's top-left corner, through the camera. */
+  tileToScreen(x: number, y: number): { x: number; y: number };
 }
 
 export interface ClientWindow {
