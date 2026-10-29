@@ -234,13 +234,27 @@ export class TilemapRenderer {
         for (const neighbour of [2, 7, 3, 5, 0, 4, 6]) {
           const mask = masks[neighbour];
           if (!mask) continue;
-          const overlay = transitionTexture(neighbour, mask);
+          const overlay = transitionTexture(neighbour, mask, edgeVariant(x, y));
           if (overlay)
             this.layer.rect(ox, oy, TILE_SIZE, TILE_SIZE).fill(fill(neighbour, ox, oy, overlay));
         }
       }
     }
   }
+}
+
+/**
+ * Two bits per edge choosing that edge's wavy profile. An edge is shared by
+ * two tiles, so its bits come from the edge's own coordinates: whichever
+ * tile draws the border, it is drawn the same way.
+ */
+function edgeVariant(x: number, y: number): number {
+  const h = (a: number, b: number): number => {
+    let v = (a * 374761393 + b * 668265263) | 0;
+    v = (v ^ (v >>> 13)) * 1274126177;
+    return ((v ^ (v >>> 16)) >>> 0) & 3;
+  };
+  return h(2 * x, 2 * y) | (h(2 * x + 3, 2 * y + 1) << 2) | (h(2 * x, 2 * y + 2) << 4) | (h(2 * x + 1, 2 * y + 1) << 6);
 }
 
 const PLANK = [0xa8743f, 0x94653a, 0x9e6c3c, 0x8c5f35];

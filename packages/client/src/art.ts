@@ -66,8 +66,108 @@ export function terrainTexture(byte: number, phase = 0): Texture | undefined {
   return names && artTexture(names[phase % names.length]);
 }
 
-export function transitionTexture(byte: number, mask: number): Texture | undefined {
-  return artTexture(`transitions/${TILE_KIND_BY_BYTE[byte]}/${mask}`);
+/**
+ * Depth (source px) of a feathered edge along its 16 pixels. Every profile
+ * starts and ends at the same depth so neighbouring tiles join seamlessly,
+ * and tiles pick among them by position so long borders never repeat.
+ */
+const PROFILES = [
+  [4, 4, 5, 6, 8, 9, 9, 8, 6, 5, 5, 6, 7, 6, 5, 4],
+  [4, 5, 6, 6, 5, 4, 3, 3, 4, 6, 8, 9, 8, 6, 5, 4],
+  [4, 3, 3, 4, 6, 8, 10, 10, 9, 7, 5, 4, 4, 5, 5, 4],
+  [4, 5, 7, 8, 8, 7, 5, 4, 3, 3, 4, 5, 6, 6, 5, 4],
+];
+const blends = new Map<string, Texture | null>();
+
+/**
+ * Where a higher terrain feathers into this tile. Each edge in `mask` (bits
+ * as in the tilemap: N, E, S, W, then the diagonals) becomes a wavy band,
+ * inner corners are filleted and lone diagonals become rounded nubs, so
+ * borders read as organic rather than as a staircase of tiles.
+ */
+function blendCovers(mask: number, variant: number, x: number, y: number): boolean {
+  const cx = x + 0.5;
+  const cy = y + 0.5;
+  const n = cy;
+  const e = 16 - cx;
+  const s = 16 - cy;
+  const w = cx;
+  const dN = PROFILES[variant & 3][x];
+  const dE = PROFILES[(variant >> 2) & 3][y];
+  const dS = PROFILES[(variant >> 4) & 3][15 - x];
+  const dW = PROFILES[(variant >> 6) & 3][15 - y];
+  if (mask & 1 && n < dN) return true;
+  if (mask & 2 && e < dE) return true;
+  if (mask & 4 && s < dS) return true;
+  if (mask & 8 && w < dW) return true;
+  const fillet = (a: number, b: number, da: number, db: number): boolean => {
+    const r = 3;
+    const fa = a - da;
+    const fb = b - db;
+    return fa >= 0 && fb >= 0 && fa < r && fb < r && (r - fa) * (r - fa) + (r - fb) * (r - fb) > r * r;
+  };
+  if (mask & 1 && mask & 2 && fillet(n, e, dN, dE)) return true;
+  if (mask & 2 && mask & 4 && fillet(e, s, dE, dS)) return true;
+  if (mask & 4 && mask & 8 && fillet(s, w, dS, dW)) return true;
+  if (mask & 8 && mask & 1 && fillet(w, n, dW, dN)) return true;
+  const nub = (a: number, b: number): boolean => a * a + b * b < 38;
+  if (mask & 16 && nub(n, w)) return true;
+  if (mask & 32 && nub(n, e)) return true;
+  if (mask & 64 && nub(s, e)) return true;
+  if (mask & 128 && nub(s, w)) return true;
+  return false;
+}
+
+/** Baked at the on-screen tile size: Graphics fills map a canvas texture one to one. */
+const BLEND_PX = 32;
+
+function bakeBlend(byte: number, mask: number, variant: number): Texture | null {
+  const base = terrainTexture(byte);
+  if (!base || !source) return null;
+  const frame = base.frame;
+  const canvas = document.createElement('canvas');
+  canvas.width = BLEND_PX;
+  canvas.height = BLEND_PX;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = false;
+  const image = source.source.resource as CanvasImageSource;
+  ctx.drawImage(image, frame.x, frame.y, 16, 16, 0, 0, BLEND_PX, BLEND_PX);
+  const img = ctx.getImageData(0, 0, BLEND_PX, BLEND_PX);
+  const px = img.data;
+  const covered: boolean[] = [];
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) covered.push(blendCovers(mask, variant, x, y));
+  const at = (x: number, y: number): boolean => x < 0 || y < 0 || x > 15 || y > 15 || covered[y * 16 + x];
+  const k = BLEND_PX / 16;
+  for (let y = 0; y < BLEND_PX; y++) {
+    for (let x = 0; x < BLEND_PX; x++) {
+      const sx = (x / k) | 0;
+      const sy = (y / k) | 0;
+      const i = (y * BLEND_PX + x) * 4;
+      if (!covered[sy * 16 + sx]) {
+        px[i + 3] = 0;
+      } else if (!at(sx + 1, sy) || !at(sx - 1, sy) || !at(sx, sy + 1) || !at(sx, sy - 1)) {
+        px[i] = (px[i] * 0.72) | 0;
+        px[i + 1] = (px[i + 1] * 0.72) | 0;
+        px[i + 2] = (px[i + 2] * 0.72) | 0;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const texture = Texture.from(canvas);
+  texture.source.scaleMode = 'nearest';
+  return texture;
+}
+
+/** `variant` picks the edge profiles (two bits per edge); pass a stable per-tile hash. */
+export function transitionTexture(byte: number, mask: number, variant = 0): Texture | undefined {
+  const key = `${byte}:${mask}:${variant & 255}`;
+  let texture = blends.get(key);
+  if (texture === undefined) {
+    texture = bakeBlend(byte, mask, variant & 255);
+    blends.set(key, texture);
+  }
+  return texture ?? artTexture(`transitions/${TILE_KIND_BY_BYTE[byte]}/${mask}`);
 }
 
 /** Stable scrambled selection: every browser agrees on each player's outfit. */
