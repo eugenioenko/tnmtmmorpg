@@ -32,7 +32,7 @@ function NightShade({ client }: { client: ClientAPI }) {
   useEffect(() => () => client.setDarkness('daynight', 0), [client]);
   if (!t || !out) return null;
   const dusk = t.minute >= 17 * 60 && t.minute < 20 * 60 ? 1 : 0;
-  return <div className="daynight-dusk" style={{ opacity: dusk * (1 - d) * 0.35 }} />;
+  return <div className="daynight-dusk" style={{ opacity: dusk * (1 - d) * 0.22 }} />;
 }
 
 function phase(minute: number): [string, string] {
