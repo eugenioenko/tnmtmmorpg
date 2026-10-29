@@ -433,5 +433,13 @@ export default definePlugin({
 
   events: {
     'player:enter': (world, payload) => enter(world, payload as Partial<PlayerEnterEvent>),
+    'classes:restore': (world, payload) => {
+      const { entityId, mana } = payload as { entityId?: unknown; mana?: unknown };
+      if (typeof entityId !== 'number' || typeof mana !== 'number' || mana <= 0) return;
+      const state = stateOf(world.get(entityId));
+      if (!state.cls || state.mana >= state.maxMana) return;
+      state.mana = state.mana + mana > state.maxMana ? state.maxMana : state.mana + mana;
+      world.update(entityId, { 'classes:state': state });
+    },
   },
 });

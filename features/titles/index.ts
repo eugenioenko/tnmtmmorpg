@@ -29,6 +29,7 @@ export type Stat =
   | 'sales'
   | 'bridges'
   | 'harvests'
+  | 'herbs'
   | 'guildlead'
   | 'deaths';
 
@@ -63,6 +64,7 @@ export const TITLES: TitleDef[] = [
   { id: 'titles:deepdelver', text: 'Deepdelver', how: 'Reach mining level 10', stat: 'mining', need: 10 },
   { id: 'titles:woodwarden', text: 'Woodwarden', how: 'Reach woodcutting level 10', stat: 'woodcutting', need: 10 },
   { id: 'titles:greenthumb', text: 'Green-Thumbed', how: 'Harvest 25 crops', stat: 'harvests', need: 25 },
+  { id: 'titles:herbalist', text: 'the Herbalist', how: 'Gather 60 wild herbs', stat: 'herbs', need: 60 },
   { id: 'titles:bridgewright', text: 'Bridgewright', how: 'Lay 20 walkways', stat: 'bridges', need: 20 },
   { id: 'titles:friend', text: 'Friend of the Village', how: 'Finish 5 village quests', stat: 'quests', need: 5 },
   { id: 'titles:dependable', text: 'the Dependable', how: 'Deliver 25 goods to bounties', stat: 'bounty', need: 25 },
@@ -178,6 +180,10 @@ export default definePlugin({
     'farming:harvested': (world, payload) => {
       const ev = payload as { entityId?: unknown };
       if (typeof ev.entityId === 'number') bump(world, ev.entityId, { harvests: 1 });
+    },
+    'herbalism:gathered': (world, payload) => {
+      const ev = payload as { entityId?: unknown; count?: unknown };
+      if (typeof ev.entityId === 'number') bump(world, ev.entityId, { herbs: num(ev.count) });
     },
     'bridges:laid': (world, payload) => {
       const ev = payload as { entityId?: unknown };
